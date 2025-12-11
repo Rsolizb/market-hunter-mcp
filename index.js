@@ -28,15 +28,15 @@ const COUNTRY_CALLING_CODES = {
   Peru: "+51",
 };
 
-// Normalizador universal
+// Normalizador universal de teléfonos
 function normalizePhone(raw, country) {
   if (!raw) return "";
 
-  let cleaned = raw.replace(/[^\d+]/g, ""); // quitamos symbols excepto +
+  let cleaned = raw.replace(/[^\d+]/g, ""); // quitamos símbolos excepto +
 
   const countryCode = COUNTRY_CALLING_CODES[country] || "";
 
-  // Si ya viene con +59...
+  // Si ya viene con +595...
   if (cleaned.startsWith("+")) return cleaned;
 
   // Si viene 00595...
@@ -45,7 +45,7 @@ function normalizePhone(raw, country) {
   // Si empieza con 0 → lo quitamos
   if (cleaned.startsWith("0")) cleaned = cleaned.slice(1);
 
-  // Si no hay código del país, devolvemos crudo
+  // Si no conocemos el código de país, devolvemos el número limpio
   if (!countryCode) return cleaned;
 
   return `${countryCode}${cleaned}`;
@@ -57,7 +57,6 @@ function normalizePhone(raw, country) {
 
 async function searchPlacesByCategory({ category, city, country, apiKey }) {
   const query = encodeURIComponent(`${category} en ${city}, ${country}`);
-
   let url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${query}&key=${apiKey}`;
 
   const places = [];
@@ -97,11 +96,10 @@ function isPlaceRelevant(place, category) {
   const adr = (place.formatted_address || "").toLowerCase();
   const cat = category.toLowerCase();
 
-  // Aquí definimos reglas por tipo
   const rules = {
     barberias: ["barber", "barbería", "peluquero", "barber shop"],
     spa: ["spa", "masaje", "relax"],
-    "salon de belleza": ["beauty", "salón", "belleza"],
+    "salon de belleza": ["beauty", "salón de belleza", "salon de belleza"],
   };
 
   if (rules[cat]) {
@@ -167,7 +165,7 @@ app.post("/run-campaign", async (req, res) => {
   const start = Date.now();
 
   try {
-    const {
+    let {
       campaignId,
       campaignName,
       categories = [],
@@ -178,7 +176,25 @@ app.post("/run-campaign", async (req, res) => {
       radiusMeters,
     } = req.body || {};
 
-    if (!campaignId || !categories.length || !city || !country) {
+    // 🔹 NUEVO: normalizar categories a array SIEMPRE
+    let categoriesArray = [];
+    if (Array.isArray(categories)) {
+      categoriesArray = categories;
+    } else if (typeof categories === "string") {
+      // puede venir "barberias" o '["barberias","spa"]'
+      try {
+        const parsed = JSON.parse(categories);
+        if (Array.isArray(parsed)) {
+          categoriesArray = parsed;
+        } else {
+          categoriesArray = [categories];
+        }
+      } catch {
+        categoriesArray = [categories];
+      }
+    }
+
+    if (!campaignId || !categoriesArray.length || !city || !country) {
       return res.status(400).json({
         error: "Parámetros inválidos",
       });
@@ -193,16 +209,19 @@ app.post("/run-campaign", async (req, res) => {
 
     let allPlaces = [];
 
-    for (const category of categories) {
+    for (const rawCategory of categoriesArray) {
+      const catStr = String(rawCategory || "").trim();
+      if (!catStr) continue;
+
       const rawPlaces = await searchPlacesByCategory({
-        category,
+        category: catStr,
         city,
         country,
         apiKey,
       });
 
       const filtered = rawPlaces.filter((p) =>
-        isPlaceRelevant(p, category)
+        isPlaceRelevant(p, catStr)
       );
 
       allPlaces.push(...filtered);
@@ -217,7 +236,7 @@ app.post("/run-campaign", async (req, res) => {
     }
     let uniquePlaces = Array.from(map.values());
 
-    // Orden por cercanía (si hay punto seleccionado)
+    // Filtro por radio si hay centro
     if (centerLat && centerLng) {
       const toRad = (x) => (x * Math.PI) / 180;
 
@@ -242,23 +261,11 @@ app.post("/run-campaign", async (req, res) => {
       uniquePlaces = uniquePlaces.filter((p) => {
         const loc = p.geometry?.location;
         if (!loc) return false;
-
         const dist = distance(
           { lat: centerLat, lng: centerLng },
           { lat: loc.lat, lng: loc.lng }
         );
-
         return dist <= (radiusMeters || 2000);
-      });
-
-      uniquePlaces.sort((a, b) => {
-        const da = a.geometry?.location
-          ? Math.abs(a.geometry.location.lat - centerLat)
-          : 99999;
-        const db = b.geometry?.location
-          ? Math.abs(b.geometry.location.lat - centerLat)
-          : 99999;
-        return da - db;
       });
     }
 
@@ -291,7 +298,7 @@ app.post("/run-campaign", async (req, res) => {
     return res.json({
       campaignId,
       campaignName,
-      categories,
+      categories: categoriesArray,
       city,
       country,
       leads,
