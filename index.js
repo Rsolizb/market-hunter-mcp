@@ -4,64 +4,97 @@
 
 const express = require("express");
 const cors = require("cors");
-const app = express();
 
+const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Middleware
 app.use(cors());
 app.use(express.json());
 
-/* -------------------------------------------
-   AYUDANTES
--------------------------------------------- */
-
-// Dormir para evitar rate limit
+// Helper para esperar (útil para los next_page_token y para no matar Place Details)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Códigos de país para normalizar teléfonos
-const COUNTRY_CALLING_CODES = {
+/**
+ * Mapa simple de códigos de país para normalizar teléfonos
+ * (agrega más países según vayas usando).
+ */
+const COUNTRY_DIAL_CODES = {
   Bolivia: "+591",
+  "Estado Plurinacional de Bolivia": "+591",
   Paraguay: "+595",
+  España: "+34",
+  Mexico: "+52",
+  México: "+52",
   Argentina: "+54",
-  Brasil: "+55",
   Chile: "+56",
   Peru: "+51",
+  Perú: "+51",
 };
 
-// Normalizador universal de teléfonos
-function normalizePhone(raw, country) {
-  if (!raw) return "";
+/**
+ * Normaliza el teléfono para que, siempre que se pueda,
+ * quede con código de país, por ejemplo: +595 123 456 789
+ */
+function normalizePhone(phone, country) {
+  if (!phone || typeof phone !== "string") return null;
 
-  let cleaned = raw.replace(/[^\d+]/g, ""); // quitamos símbolos excepto +
+  const trimmed = phone.trim();
 
-  const countryCode = COUNTRY_CALLING_CODES[country] || "";
+  // Si ya trae +, lo dejamos tal cual.
+  if (trimmed.startsWith("+")) return trimmed;
 
-  // Si ya viene con +595...
-  if (cleaned.startsWith("+")) return cleaned;
+  const dialCode = COUNTRY_DIAL_CODES[country] || null;
+  if (!dialCode) {
+    // No tenemos el país mapeado, devolvemos el original.
+    return trimmed;
+  }
 
-  // Si viene 00595...
-  if (cleaned.startsWith("00")) return `+${cleaned.slice(2)}`;
+  // Quitamos espacios raros al inicio
+  let clean = trimmed.replace(/^\(0\)/, "").trim();
 
-  // Si empieza con 0 → lo quitamos
-  if (cleaned.startsWith("0")) cleaned = cleaned.slice(1);
+  // Si empieza con 0, lo quitamos para pegar el código de país
+  clean = clean.replace(/^0+/, "").trim();
 
-  // Si no conocemos el código de país, devolvemos el número limpio
-  if (!countryCode) return cleaned;
-
-  return `${countryCode}${cleaned}`;
+  // Construimos: +CODIGO ESPACIO NÚMERO
+  return `${dialCode} ${clean}`;
 }
 
-/* -------------------------------------------
-   BÚSQUEDA POR CATEGORÍA + UBICACIÓN
--------------------------------------------- */
-
-async function searchPlacesByCategory({ category, city, country, apiKey }) {
+/**
+ * Llama a Google Places Text Search para una categoría + ciudad/país,
+ * opcionalmente sesgado por centro y radio (lat/lng/radius).
+ *
+ * NO filtramos resultados extra aquí para no perder leads.
+ */
+async function searchPlacesByCategory({
+  category,
+  city,
+  country,
+  apiKey,
+  centerLat,
+  centerLng,
+  radiusMeters,
+}) {
   const query = encodeURIComponent(`${category} en ${city}, ${country}`);
+
+  // Base URL de Text Search
   let url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${query}&key=${apiKey}`;
+
+  // Si tenemos coordenadas y radio, los usamos para sesgar la búsqueda
+  if (
+    typeof centerLat === "number" &&
+    !Number.isNaN(centerLat) &&
+    typeof centerLng === "number" &&
+    !Number.isNaN(centerLng) &&
+    typeof radiusMeters === "number" &&
+    !Number.isNaN(radiusMeters)
+  ) {
+    url += `&location=${centerLat},${centerLng}&radius=${radiusMeters}`;
+  }
 
   const places = [];
   let nextPageToken = null;
-  let counter = 0;
+  let safetyCounter = 0;
 
   do {
     const response = await fetch(url);
@@ -72,100 +105,91 @@ async function searchPlacesByCategory({ category, city, country, apiKey }) {
       break;
     }
 
-    if (Array.isArray(data.results)) places.push(...data.results);
+    if (Array.isArray(data.results)) {
+      places.push(...data.results);
+    }
 
     nextPageToken = data.next_page_token || null;
 
     if (nextPageToken) {
+      // Google pide esperar un ratito antes de usar next_page_token
       await sleep(2000);
       url = `https://maps.googleapis.com/maps/api/place/textsearch/json?pagetoken=${nextPageToken}&key=${apiKey}`;
     }
 
-    counter++;
-  } while (nextPageToken && counter < 3);
+    safetyCounter += 1;
+  } while (nextPageToken && safetyCounter < 3); // máximo 3 páginas
 
   return places;
 }
 
-/* -------------------------------------------
-   FILTRO REAL POR CATEGORÍA
--------------------------------------------- */
-
-function isPlaceRelevant(place, category) {
-  const name = (place.name || "").toLowerCase();
-  const adr = (place.formatted_address || "").toLowerCase();
-  const cat = category.toLowerCase();
-
-  const rules = {
-    barberias: ["barber", "barbería", "peluquero", "barber shop"],
-    spa: ["spa", "masaje", "relax"],
-    "salon de belleza": ["beauty", "salón de belleza", "salon de belleza"],
-  };
-
-  if (rules[cat]) {
-    return rules[cat].some((kw) => name.includes(kw) || adr.includes(kw));
-  }
-
-  // fallback amplio
-  return name.includes(cat);
-}
-
-/* -------------------------------------------
-   PLACE DETAILS: ENRIQUECER LEAD
--------------------------------------------- */
-
+/**
+ * Llama a Place Details para obtener teléfono y website
+ */
 async function enrichLeadWithDetails(place, apiKey, country) {
-  const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${place.place_id}&fields=formatted_phone_number,international_phone_number,website,rating,geometry,formatted_address,name&key=${apiKey}`;
+  const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${place.place_id}&fields=formatted_phone_number,international_phone_number,website&key=${apiKey}`;
 
   try {
     const resp = await fetch(detailsUrl);
-    const data = await resp.json();
+    const json = await resp.json();
 
-    if (data.status !== "OK" && data.status !== "ZERO_RESULTS") {
-      console.warn("Error en Place Details:", data.status, data.error_message);
+    if (json.status !== "OK" && json.status !== "ZERO_RESULTS") {
+      console.warn("Error en Place Details:", json.status, json.error_message);
     }
 
-    const info = data.result || {};
+    const details = json.result || {};
 
     const rawPhone =
-      info.international_phone_number ||
-      info.formatted_phone_number ||
-      "";
+      details.international_phone_number ||
+      details.formatted_phone_number ||
+      null;
 
     const phone = normalizePhone(rawPhone, country);
+    const website = details.website || null;
 
     return {
-      name: info.name || place.name,
-      address: info.formatted_address || place.formatted_address,
-      phone,
-      website: info.website || "",
-      rating: info.rating || place.rating || 0,
+      name: place.name || null,
+      address: place.formatted_address || null,
+      rating: typeof place.rating === "number" ? place.rating : null,
+      location: place.geometry?.location || null,
       place_id: place.place_id,
-      location: info.geometry?.location || place.geometry?.location || null,
+      phone,
+      website,
     };
   } catch (err) {
-    console.error("Error en enrichLead:", err);
+    console.error("Error llamando a Place Details:", err.message);
     return {
-      name: place.name,
-      address: place.formatted_address,
-      phone: "",
-      website: "",
-      rating: place.rating || 0,
-      place_id: place.place_id,
+      name: place.name || null,
+      address: place.formatted_address || null,
+      rating: typeof place.rating === "number" ? place.rating : null,
       location: place.geometry?.location || null,
+      place_id: place.place_id,
+      phone: null,
+      website: null,
     };
   }
 }
 
-/* -------------------------------------------
-   ENDPOINT PRINCIPAL
--------------------------------------------- */
-
+/**
+ * Endpoint principal: ejecuta la campaña
+ *
+ * Espera un body como:
+ * {
+ *   "campaignId": "uuid",
+ *   "campaignName": "Nombre",
+ *   "categories": ["barberías", "spas"],
+ *   "city": "Asunción",
+ *   "country": "Paraguay",
+ *   "centerLat": -25.2637,
+ *   "centerLng": -57.5759,
+ *   "radiusMeters": 6000
+ * }
+ */
 app.post("/run-campaign", async (req, res) => {
-  const start = Date.now();
+  const startTime = Date.now();
 
   try {
-    let {
+    const {
       campaignId,
       campaignName,
       categories = [],
@@ -176,27 +200,27 @@ app.post("/run-campaign", async (req, res) => {
       radiusMeters,
     } = req.body || {};
 
-    // 🔹 NUEVO: normalizar categories a array SIEMPRE
+    // Validaciones básicas
+    if (!campaignId || !city || !country) {
+      return res.status(400).json({
+        error: "Parámetros inválidos",
+        details:
+          "Se requieren campaignId, city y country como mínimo para ejecutar la campaña.",
+      });
+    }
+
     let categoriesArray = [];
     if (Array.isArray(categories)) {
       categoriesArray = categories;
-    } else if (typeof categories === "string") {
-      // puede venir "barberias" o '["barberias","spa"]'
-      try {
-        const parsed = JSON.parse(categories);
-        if (Array.isArray(parsed)) {
-          categoriesArray = parsed;
-        } else {
-          categoriesArray = [categories];
-        }
-      } catch {
-        categoriesArray = [categories];
-      }
+    } else if (typeof categories === "string" && categories.trim()) {
+      // Por si algún día viene como string simple
+      categoriesArray = [categories];
     }
 
-    if (!campaignId || !categoriesArray.length || !city || !country) {
+    if (!categoriesArray.length) {
       return res.status(400).json({
         error: "Parámetros inválidos",
+        details: "Debes enviar al menos una categoría en 'categories'.",
       });
     }
 
@@ -204,10 +228,13 @@ app.post("/run-campaign", async (req, res) => {
     if (!apiKey) {
       return res.status(500).json({
         error: "Falta GOOGLE_MAPS_API_KEY",
+        details:
+          "Configura la variable de entorno GOOGLE_MAPS_API_KEY en Railway.",
       });
     }
 
-    let allPlaces = [];
+    // 1) Buscar lugares por todas las categorías
+    const allPlacesMap = new Map(); // place_id -> place
 
     for (const rawCategory of categoriesArray) {
       const catStr = String(rawCategory || "").trim();
@@ -218,83 +245,61 @@ app.post("/run-campaign", async (req, res) => {
         city,
         country,
         apiKey,
+        centerLat:
+          typeof centerLat === "number" && !Number.isNaN(centerLat)
+            ? centerLat
+            : undefined,
+        centerLng:
+          typeof centerLng === "number" && !Number.isNaN(centerLng)
+            ? centerLng
+            : undefined,
+        radiusMeters:
+          typeof radiusMeters === "number" && !Number.isNaN(radiusMeters)
+            ? radiusMeters
+            : undefined,
       });
 
-      const filtered = rawPlaces.filter((p) =>
-        isPlaceRelevant(p, catStr)
-      );
-
-      allPlaces.push(...filtered);
-    }
-
-    // Eliminar duplicados
-    const map = new Map();
-    for (const p of allPlaces) {
-      if (p.place_id && !map.has(p.place_id)) {
-        map.set(p.place_id, p);
+      // 👉 Por ahora NO filtramos por nombre/tipo para no perder leads.
+      // Sólo deduplicamos por place_id.
+      for (const p of rawPlaces) {
+        if (!p.place_id) continue;
+        if (!allPlacesMap.has(p.place_id)) {
+          allPlacesMap.set(p.place_id, p);
+        }
       }
     }
-    let uniquePlaces = Array.from(map.values());
 
-    // Filtro por radio si hay centro
-    if (centerLat && centerLng) {
-      const toRad = (x) => (x * Math.PI) / 180;
+    const allPlaces = Array.from(allPlacesMap.values());
 
-      function distance(a, b) {
-        const dLat = toRad(b.lat - a.lat);
-        const dLng = toRad(b.lng - a.lng);
-        const R = 6371000; // m
-        return (
-          2 *
-          R *
-          Math.asin(
-            Math.sqrt(
-              Math.sin(dLat / 2) ** 2 +
-                Math.cos(toRad(a.lat)) *
-                  Math.cos(toRad(b.lat)) *
-                  Math.sin(dLng / 2) ** 2
-            )
-          )
-        );
-      }
+    // Limitamos para no matar la API (ajusta si quieres más)
+    const MAX_LEADS = 50;
+    const limitedPlaces = allPlaces.slice(0, MAX_LEADS);
 
-      uniquePlaces = uniquePlaces.filter((p) => {
-        const loc = p.geometry?.location;
-        if (!loc) return false;
-        const dist = distance(
-          { lat: centerLat, lng: centerLng },
-          { lat: loc.lat, lng: loc.lng }
-        );
-        return dist <= (radiusMeters || 2000);
-      });
-    }
-
-    // Limitar a 50 negocios
-    const limited = uniquePlaces.slice(0, 50);
-
+    // 2) Enriquecer cada lugar con teléfono y website
     const leads = [];
-    for (const p of limited) {
-      const enriched = await enrichLeadWithDetails(p, apiKey, country);
-      leads.push(enriched);
+    for (const place of limitedPlaces) {
+      const lead = await enrichLeadWithDetails(place, apiKey, country);
+      leads.push(lead);
+      // Pequeño delay para no saturar Place Details
       await sleep(150);
     }
 
+    // 3) Calcular resumen
+    const total = leads.length;
     const ratings = leads
-      .map((l) => l.rating)
-      .filter((r) => typeof r === "number");
+      .map((l) => (typeof l.rating === "number" ? l.rating : null))
+      .filter((r) => r !== null);
 
-    const summary = {
-      total: leads.length,
-      avgRating:
-        ratings.length > 0
-          ? Number(
-              (
-                ratings.reduce((sum, r) => sum + r, 0) / ratings.length
-              ).toFixed(2)
-            )
-          : 0,
-    };
+    const avgRating =
+      ratings.length > 0
+        ? Number(
+            (ratings.reduce((sum, r) => sum + r, 0) / ratings.length).toFixed(2),
+          )
+        : 0;
 
+    const executionTime = Date.now() - startTime;
+
+    // 4) Respuesta final (formato amigable para n8n / Lovable)
     return res.json({
       campaignId,
       campaignName,
@@ -302,22 +307,23 @@ app.post("/run-campaign", async (req, res) => {
       city,
       country,
       leads,
-      executionTime: Date.now() - start,
-      summary,
+      executionTime,
+      summary: {
+        total,
+        avgRating,
+      },
     });
   } catch (err) {
     console.error("Error en /run-campaign:", err);
+
     return res.status(500).json({
       error: "Error ejecutando campaña",
-      details: err.message,
+      details: err.message || "Error desconocido",
     });
   }
 });
 
-/* -------------------------------------------
-   HEALTH
--------------------------------------------- */
-
+// Health check simple
 app.get("/", (_req, res) => {
   res.send("Komerzia Market Hunter MCP is running.");
 });
