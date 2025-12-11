@@ -4,27 +4,65 @@
 
 const express = require("express");
 const cors = require("cors");
-
 const app = express();
+
 const PORT = process.env.PORT || 3000;
 
-// Middleware
 app.use(cors());
 app.use(express.json());
 
-// Pequeño helper para dormir (útil para respetar rate limits de Google)
+/* -------------------------------------------
+   AYUDANTES
+-------------------------------------------- */
+
+// Dormir para evitar rate limit
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/**
- * Llama a Google Places Text Search para una categoría + ciudad + país
- */
+// Códigos de país para normalizar teléfonos
+const COUNTRY_CALLING_CODES = {
+  Bolivia: "+591",
+  Paraguay: "+595",
+  Argentina: "+54",
+  Brasil: "+55",
+  Chile: "+56",
+  Peru: "+51",
+};
+
+// Normalizador universal
+function normalizePhone(raw, country) {
+  if (!raw) return "";
+
+  let cleaned = raw.replace(/[^\d+]/g, ""); // quitamos symbols excepto +
+
+  const countryCode = COUNTRY_CALLING_CODES[country] || "";
+
+  // Si ya viene con +59...
+  if (cleaned.startsWith("+")) return cleaned;
+
+  // Si viene 00595...
+  if (cleaned.startsWith("00")) return `+${cleaned.slice(2)}`;
+
+  // Si empieza con 0 → lo quitamos
+  if (cleaned.startsWith("0")) cleaned = cleaned.slice(1);
+
+  // Si no hay código del país, devolvemos crudo
+  if (!countryCode) return cleaned;
+
+  return `${countryCode}${cleaned}`;
+}
+
+/* -------------------------------------------
+   BÚSQUEDA POR CATEGORÍA + UBICACIÓN
+-------------------------------------------- */
+
 async function searchPlacesByCategory({ category, city, country, apiKey }) {
   const query = encodeURIComponent(`${category} en ${city}, ${country}`);
+
   let url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${query}&key=${apiKey}`;
 
   const places = [];
-  let safetyCounter = 0;
   let nextPageToken = null;
+  let counter = 0;
 
   do {
     const response = await fetch(url);
@@ -35,75 +73,98 @@ async function searchPlacesByCategory({ category, city, country, apiKey }) {
       break;
     }
 
-    if (Array.isArray(data.results)) {
-      places.push(...data.results);
-    }
+    if (Array.isArray(data.results)) places.push(...data.results);
 
     nextPageToken = data.next_page_token || null;
 
-    // Google pide esperar un ratito para next_page_token
     if (nextPageToken) {
       await sleep(2000);
       url = `https://maps.googleapis.com/maps/api/place/textsearch/json?pagetoken=${nextPageToken}&key=${apiKey}`;
     }
 
-    safetyCounter += 1;
-  } while (nextPageToken && safetyCounter < 3); // máximo 3 páginas por categoría
+    counter++;
+  } while (nextPageToken && counter < 3);
 
   return places;
 }
 
-/**
- * Llama a Place Details para obtener teléfono y website
- */
-async function enrichLeadWithDetails(place, apiKey) {
-  const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${place.place_id}&fields=formatted_phone_number,international_phone_number,website&key=${apiKey}`;
+/* -------------------------------------------
+   FILTRO REAL POR CATEGORÍA
+-------------------------------------------- */
+
+function isPlaceRelevant(place, category) {
+  const name = (place.name || "").toLowerCase();
+  const adr = (place.formatted_address || "").toLowerCase();
+  const cat = category.toLowerCase();
+
+  // Aquí definimos reglas por tipo
+  const rules = {
+    barberias: ["barber", "barbería", "peluquero", "barber shop"],
+    spa: ["spa", "masaje", "relax"],
+    "salon de belleza": ["beauty", "salón", "belleza"],
+  };
+
+  if (rules[cat]) {
+    return rules[cat].some((kw) => name.includes(kw) || adr.includes(kw));
+  }
+
+  // fallback amplio
+  return name.includes(cat);
+}
+
+/* -------------------------------------------
+   PLACE DETAILS: ENRIQUECER LEAD
+-------------------------------------------- */
+
+async function enrichLeadWithDetails(place, apiKey, country) {
+  const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${place.place_id}&fields=formatted_phone_number,international_phone_number,website,rating,geometry,formatted_address,name&key=${apiKey}`;
 
   try {
     const resp = await fetch(detailsUrl);
-    const json = await resp.json();
+    const data = await resp.json();
 
-    if (json.status !== "OK" && json.status !== "ZERO_RESULTS") {
-      console.warn("Error en Place Details:", json.status, json.error_message);
+    if (data.status !== "OK" && data.status !== "ZERO_RESULTS") {
+      console.warn("Error en Place Details:", data.status, data.error_message);
     }
 
-    const details = json.result || {};
+    const info = data.result || {};
 
-    const phone =
-      details.formatted_phone_number ||
-      details.international_phone_number ||
-      null;
+    const rawPhone =
+      info.international_phone_number ||
+      info.formatted_phone_number ||
+      "";
 
-    const website = details.website || null;
+    const phone = normalizePhone(rawPhone, country);
 
     return {
-      name: place.name || null,
-      address: place.formatted_address || null,
-      rating: typeof place.rating === "number" ? place.rating : null,
-      location: place.geometry?.location || null,
-      place_id: place.place_id,
+      name: info.name || place.name,
+      address: info.formatted_address || place.formatted_address,
       phone,
-      website,
+      website: info.website || "",
+      rating: info.rating || place.rating || 0,
+      place_id: place.place_id,
+      location: info.geometry?.location || place.geometry?.location || null,
     };
   } catch (err) {
-    console.error("Error llamando a Place Details:", err.message);
+    console.error("Error en enrichLead:", err);
     return {
-      name: place.name || null,
-      address: place.formatted_address || null,
-      rating: typeof place.rating === "number" ? place.rating : null,
-      location: place.geometry?.location || null,
+      name: place.name,
+      address: place.formatted_address,
+      phone: "",
+      website: "",
+      rating: place.rating || 0,
       place_id: place.place_id,
-      phone: null,
-      website: null,
+      location: place.geometry?.location || null,
     };
   }
 }
 
-/**
- * Endpoint principal: ejecuta la campaña
- */
+/* -------------------------------------------
+   ENDPOINT PRINCIPAL
+-------------------------------------------- */
+
 app.post("/run-campaign", async (req, res) => {
-  const startTime = Date.now();
+  const start = Date.now();
 
   try {
     const {
@@ -112,13 +173,14 @@ app.post("/run-campaign", async (req, res) => {
       categories = [],
       city,
       country,
+      centerLat,
+      centerLng,
+      radiusMeters,
     } = req.body || {};
 
-    if (!campaignId || !city || !country || !categories.length) {
+    if (!campaignId || !categories.length || !city || !country) {
       return res.status(400).json({
         error: "Parámetros inválidos",
-        details:
-          "Se requieren campaignId, city, country y al menos una categoría.",
       });
     }
 
@@ -126,65 +188,106 @@ app.post("/run-campaign", async (req, res) => {
     if (!apiKey) {
       return res.status(500).json({
         error: "Falta GOOGLE_MAPS_API_KEY",
-        details:
-          "Configura la variable de entorno GOOGLE_MAPS_API_KEY en Railway.",
       });
     }
 
-    // 1) Buscar lugares por categoría
-    const allPlacesMap = new Map(); // place_id -> place
+    let allPlaces = [];
 
-    for (const rawCategory of categories) {
-      const category = String(rawCategory || "").trim();
-      if (!category) continue;
-
-      const places = await searchPlacesByCategory({
+    for (const category of categories) {
+      const rawPlaces = await searchPlacesByCategory({
         category,
         city,
         country,
         apiKey,
       });
 
-      for (const p of places) {
-        if (!p.place_id) continue;
-        // Evitamos duplicados por place_id
-        if (!allPlacesMap.has(p.place_id)) {
-          allPlacesMap.set(p.place_id, p);
-        }
-      }
+      const filtered = rawPlaces.filter((p) =>
+        isPlaceRelevant(p, category)
+      );
+
+      allPlaces.push(...filtered);
     }
 
-    const allPlaces = Array.from(allPlacesMap.values());
+    // Eliminar duplicados
+    const map = new Map();
+    for (const p of allPlaces) {
+      if (p.place_id && !map.has(p.place_id)) {
+        map.set(p.place_id, p);
+      }
+    }
+    let uniquePlaces = Array.from(map.values());
 
-    // Limitamos para no matar la API (ajusta si quieres más)
-    const MAX_LEADS = 50;
-    const limitedPlaces = allPlaces.slice(0, MAX_LEADS);
+    // Orden por cercanía (si hay punto seleccionado)
+    if (centerLat && centerLng) {
+      const toRad = (x) => (x * Math.PI) / 180;
 
-    // 2) Enriquecer cada lugar con teléfono y website
+      function distance(a, b) {
+        const dLat = toRad(b.lat - a.lat);
+        const dLng = toRad(b.lng - a.lng);
+        const R = 6371000; // m
+        return (
+          2 *
+          R *
+          Math.asin(
+            Math.sqrt(
+              Math.sin(dLat / 2) ** 2 +
+                Math.cos(toRad(a.lat)) *
+                  Math.cos(toRad(b.lat)) *
+                  Math.sin(dLng / 2) ** 2
+            )
+          )
+        );
+      }
+
+      uniquePlaces = uniquePlaces.filter((p) => {
+        const loc = p.geometry?.location;
+        if (!loc) return false;
+
+        const dist = distance(
+          { lat: centerLat, lng: centerLng },
+          { lat: loc.lat, lng: loc.lng }
+        );
+
+        return dist <= (radiusMeters || 2000);
+      });
+
+      uniquePlaces.sort((a, b) => {
+        const da = a.geometry?.location
+          ? Math.abs(a.geometry.location.lat - centerLat)
+          : 99999;
+        const db = b.geometry?.location
+          ? Math.abs(b.geometry.location.lat - centerLat)
+          : 99999;
+        return da - db;
+      });
+    }
+
+    // Limitar a 50 negocios
+    const limited = uniquePlaces.slice(0, 50);
+
     const leads = [];
-    for (const place of limitedPlaces) {
-      const lead = await enrichLeadWithDetails(place, apiKey);
-      leads.push(lead);
-      // Pequeño delay para no saturar Place Details
+    for (const p of limited) {
+      const enriched = await enrichLeadWithDetails(p, apiKey, country);
+      leads.push(enriched);
       await sleep(150);
     }
 
-    // 3) Calcular resumen
-    const total = leads.length;
     const ratings = leads
-      .map((l) => (typeof l.rating === "number" ? l.rating : null))
-      .filter((r) => r !== null);
+      .map((l) => l.rating)
+      .filter((r) => typeof r === "number");
 
-    const avgRating =
-      ratings.length > 0
-        ? Number(
-            (ratings.reduce((sum, r) => sum + r, 0) / ratings.length).toFixed(2)
-          )
-        : 0;
+    const summary = {
+      total: leads.length,
+      avgRating:
+        ratings.length > 0
+          ? Number(
+              (
+                ratings.reduce((sum, r) => sum + r, 0) / ratings.length
+              ).toFixed(2)
+            )
+          : 0,
+    };
 
-    const executionTime = Date.now() - startTime;
-
-    // 4) Respuesta final
     return res.json({
       campaignId,
       campaignName,
@@ -192,23 +295,22 @@ app.post("/run-campaign", async (req, res) => {
       city,
       country,
       leads,
-      executionTime,
-      summary: {
-        total,
-        avgRating,
-      },
+      executionTime: Date.now() - start,
+      summary,
     });
   } catch (err) {
     console.error("Error en /run-campaign:", err);
-
     return res.status(500).json({
       error: "Error ejecutando campaña",
-      details: err.message || "Error desconocido",
+      details: err.message,
     });
   }
 });
 
-// Health check simple
+/* -------------------------------------------
+   HEALTH
+-------------------------------------------- */
+
 app.get("/", (_req, res) => {
   res.send("Komerzia Market Hunter MCP is running.");
 });
