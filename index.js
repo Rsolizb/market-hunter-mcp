@@ -272,7 +272,7 @@ app.post("/run-campaign", async (req, res) => {
     const allPlaces = Array.from(allPlacesMap.values());
 
     // Limitamos para no matar la API (ajusta si quieres más)
-    const MAX_LEADS = 50;
+    const MAX_LEADS = 200;
     const limitedPlaces = allPlaces.slice(0, MAX_LEADS);
 
     // 2) Enriquecer cada lugar con teléfono y website
