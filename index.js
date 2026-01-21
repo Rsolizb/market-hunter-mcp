@@ -17,7 +17,7 @@ app.use(express.json());
 
 // Configuración de Apify
 const APIFY_TOKEN = process.env.APIFY_TOKEN;
-const APIFY_ACTOR_ID = 'compass/crawler-google-places';
+const APIFY_ACTOR_ID = 'compass~crawler-google-places';
 
 /**
  * Helper para esperar
