@@ -29,39 +29,35 @@ const COUNTRY_DIAL_CODES = {
 
 function normalizePhone(phone, country) {
   if (!phone || typeof phone !== 'string') return null;
-
   const trimmed = phone.trim();
-
   if (trimmed.startsWith('+')) return trimmed;
-
   const dialCode = COUNTRY_DIAL_CODES[country] || null;
-  if (!dialCode) {
-    return trimmed;
-  }
-
+  if (!dialCode) return trimmed;
   let clean = trimmed.replace(/^\(0\)/, '').trim();
   clean = clean.replace(/^0+/, '').trim();
-
   return `${dialCode} ${clean}`;
 }
 
 async function searchPlacesWithApify({ category, city, country, maxResults = 200 }) {
   try {
-    console.log(`🔍 Buscando con Apify: ${category} en ${city}, ${country}`);
+    console.log(`🔍 Buscando con Apify: ${category} en ${city}, ${country} (max: ${maxResults})`);
 
     const searchQuery = `${category} en ${city}, ${country}`;
 
     const apifyConfig = {
       searchStringsArray: [searchQuery],
       maxCrawledPlaces: maxResults,
+      maxCrawledPlacesPerSearch: maxResults,
       language: 'es',
-      maxAutomaticZoomOut: 10,
+      maxAutomaticZoomOut: 15,
       includeWebResults: false,
       scrapeReviews: false,
       scrapePhotos: false,
       maxImages: 0,
       maxReviews: 0
     };
+
+    console.log(`📤 Config Apify:`, JSON.stringify(apifyConfig, null, 2));
 
     const runResponse = await axios.post(
       `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_TOKEN}`,
@@ -88,7 +84,7 @@ async function searchPlacesWithApify({ category, city, country, maxResults = 200
   }
 }
 
-async function waitForApifyResults(runId, datasetId, maxIntentos = 120) {
+async function waitForApifyResults(runId, datasetId, maxIntentos = 150) {
   const intervalo = 3000;
 
   for (let i = 0; i < maxIntentos; i++) {
@@ -126,12 +122,7 @@ function formatApifyResultToLead(place, country) {
     name: place.title || null,
     address: place.address || null,
     rating: place.totalScore || null,
-    location: place.location
-      ? {
-          lat: place.location.lat,
-          lng: place.location.lng,
-        }
-      : null,
+    location: place.location ? { lat: place.location.lat, lng: place.location.lng } : null,
     place_id: place.placeId || null,
     phone: phone,
     website: place.website || null,
@@ -157,7 +148,7 @@ app.post('/run-campaign', async (req, res) => {
     if (!campaignId || !city || !country) {
       return res.status(400).json({
         error: 'Parámetros inválidos',
-        details: 'Se requieren campaignId, city y country como mínimo para ejecutar la campaña.',
+        details: 'Se requieren campaignId, city y country.',
       });
     }
 
@@ -171,20 +162,21 @@ app.post('/run-campaign', async (req, res) => {
     if (!categoriesArray.length) {
       return res.status(400).json({
         error: 'Parámetros inválidos',
-        details: "Debes enviar al menos una categoría en 'categories'.",
+        details: 'Debes enviar al menos una categoría.',
       });
     }
 
     if (!APIFY_TOKEN) {
       return res.status(500).json({
         error: 'Falta APIFY_TOKEN',
-        details: 'Configura la variable de entorno APIFY_TOKEN en Railway.',
+        details: 'Configura APIFY_TOKEN en Railway.',
       });
     }
 
     console.log(`🚀 Iniciando campaña: ${campaignName || campaignId}`);
     console.log(`📍 Ubicación: ${city}, ${country}`);
     console.log(`🏷️ Categorías: ${categoriesArray.join(', ')}`);
+    console.log(`🔢 Max por categoría: ${maxResultsPerCategory}`);
 
     const allPlacesMap = new Map();
 
@@ -213,25 +205,16 @@ app.post('/run-campaign', async (req, res) => {
     }
 
     const allPlaces = Array.from(allPlacesMap.values());
-
     console.log(`📊 Total de lugares únicos encontrados: ${allPlaces.length}`);
 
     const placesWithPhone = allPlaces.filter((p) => p.phone && p.phone.trim() !== '');
-
     console.log(`📞 Lugares con teléfono: ${placesWithPhone.length}`);
 
     const leads = placesWithPhone.map((place) => formatApifyResultToLead(place, country));
 
     const total = leads.length;
-    const ratings = leads
-      .map((l) => (typeof l.rating === 'number' ? l.rating : null))
-      .filter((r) => r !== null);
-
-    const avgRating =
-      ratings.length > 0
-        ? Number((ratings.reduce((sum, r) => sum + r, 0) / ratings.length).toFixed(2))
-        : 0;
-
+    const ratings = leads.map((l) => (typeof l.rating === 'number' ? l.rating : null)).filter((r) => r !== null);
+    const avgRating = ratings.length > 0 ? Number((ratings.reduce((sum, r) => sum + r, 0) / ratings.length).toFixed(2)) : 0;
     const executionTime = Date.now() - startTime;
 
     console.log(`✅ Campaña completada en ${(executionTime / 1000).toFixed(2)}s`);
@@ -253,73 +236,9 @@ app.post('/run-campaign', async (req, res) => {
     });
   } catch (err) {
     console.error('❌ Error en /run-campaign:', err);
-
     return res.status(500).json({
       error: 'Error ejecutando campaña',
       details: err.message || 'Error desconocido',
-    });
-  }
-});
-
-app.post('/api/search-places', async (req, res) => {
-  try {
-    const { query, location, maxResults } = req.body;
-
-    if (!query) {
-      return res.status(400).json({
-        success: false,
-        error: 'El campo "query" es requerido',
-      });
-    }
-
-    const searchQuery = location ? `${query} ${location}` : query;
-
-    const apifyConfig = {
-      searchStringsArray: [searchQuery],
-      maxCrawledPlaces: maxResults || 200,
-      language: 'es',
-      maxAutomaticZoomOut: 10,
-      includeWebResults: false,
-      scrapeReviews: false,
-      scrapePhotos: false,
-      maxImages: 0,
-      maxReviews: 0
-    };
-
-    const runResponse = await axios.post(
-      `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_TOKEN}`,
-      apifyConfig,
-      { headers: { 'Content-Type': 'application/json' }, timeout: 300000 }
-    );
-
-    const runId = runResponse.data.data.id;
-    const datasetId = runResponse.data.data.defaultDatasetId;
-
-    const results = await waitForApifyResults(runId, datasetId);
-
-    const withPhone = results.filter((r) => r.phone && r.phone.trim() !== '');
-
-    const formatted = withPhone.map((place) => ({
-      nombre: place.title,
-      telefono: place.phone,
-      direccion: place.address,
-      sitioWeb: place.website,
-      ubicacion: place.location,
-      rating: place.totalScore,
-      categoria: place.categoryName,
-    }));
-
-    res.json({
-      success: true,
-      query: searchQuery,
-      totalEncontrados: results.length,
-      totalConTelefono: withPhone.length,
-      resultados: formatted,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
     });
   }
 });
