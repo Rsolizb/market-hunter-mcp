@@ -1,9 +1,12 @@
 // index.js
 // Komerzia Market Hunter MCP - Railway
-// Busca negocios en Google Maps y devuelve leads enriquecidos con teléfono y web.
+// Busca negocios en Google Maps usando Apify
+// Versión: 2.0 (Apify Integration)
 
-const express = require("express");
-const cors = require("cors");
+const express = require('express');
+const axios = require('axios');
+const cors = require('cors');
+require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -12,180 +15,193 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Helper para esperar (útil para los next_page_token y para no matar Place Details)
+// Configuración de Apify
+const APIFY_TOKEN = process.env.APIFY_TOKEN;
+const APIFY_ACTOR_ID = 'compass/crawler-google-places';
+
+/**
+ * Helper para esperar
+ */
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Mapa simple de códigos de país para normalizar teléfonos
- * (agrega más países según vayas usando).
+ * Normalizar teléfono (mantiene tu lógica original)
  */
 const COUNTRY_DIAL_CODES = {
-  Bolivia: "+591",
-  "Estado Plurinacional de Bolivia": "+591",
-  Paraguay: "+595",
-  España: "+34",
-  Mexico: "+52",
-  México: "+52",
-  Argentina: "+54",
-  Chile: "+56",
-  Peru: "+51",
-  Perú: "+51",
+  Bolivia: '+591',
+  'Estado Plurinacional de Bolivia': '+591',
+  Paraguay: '+595',
+  España: '+34',
+  Mexico: '+52',
+  México: '+52',
+  Argentina: '+54',
+  Chile: '+56',
+  Peru: '+51',
+  Perú: '+51',
 };
 
-/**
- * Normaliza el teléfono para que, siempre que se pueda,
- * quede con código de país, por ejemplo: +595 123 456 789
- */
 function normalizePhone(phone, country) {
-  if (!phone || typeof phone !== "string") return null;
+  if (!phone || typeof phone !== 'string') return null;
 
   const trimmed = phone.trim();
 
-  // Si ya trae +, lo dejamos tal cual.
-  if (trimmed.startsWith("+")) return trimmed;
+  // Si ya trae +, lo dejamos tal cual
+  if (trimmed.startsWith('+')) return trimmed;
 
   const dialCode = COUNTRY_DIAL_CODES[country] || null;
   if (!dialCode) {
-    // No tenemos el país mapeado, devolvemos el original.
     return trimmed;
   }
 
-  // Quitamos espacios raros al inicio
-  let clean = trimmed.replace(/^\(0\)/, "").trim();
+  let clean = trimmed.replace(/^\(0\)/, '').trim();
+  clean = clean.replace(/^0+/, '').trim();
 
-  // Si empieza con 0, lo quitamos para pegar el código de país
-  clean = clean.replace(/^0+/, "").trim();
-
-  // Construimos: +CODIGO ESPACIO NÚMERO
   return `${dialCode} ${clean}`;
 }
 
 /**
- * Llama a Google Places Text Search para una categoría + ciudad/país,
- * opcionalmente sesgado por centro y radio (lat/lng/radius).
- *
- * NO filtramos resultados extra aquí para no perder leads.
+ * Buscar lugares usando Apify Google Maps Scraper
  */
-async function searchPlacesByCategory({
+async function searchPlacesWithApify({
   category,
   city,
   country,
-  apiKey,
-  centerLat,
-  centerLng,
-  radiusMeters,
+  maxResults = 100,
 }) {
-  const query = encodeURIComponent(`${category} en ${city}, ${country}`);
-
-  // Base URL de Text Search
-  let url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${query}&key=${apiKey}`;
-
-  // Si tenemos coordenadas y radio, los usamos para sesgar la búsqueda
-  if (
-    typeof centerLat === "number" &&
-    !Number.isNaN(centerLat) &&
-    typeof centerLng === "number" &&
-    !Number.isNaN(centerLng) &&
-    typeof radiusMeters === "number" &&
-    !Number.isNaN(radiusMeters)
-  ) {
-    url += `&location=${centerLat},${centerLng}&radius=${radiusMeters}`;
-  }
-
-  const places = [];
-  let nextPageToken = null;
-  let safetyCounter = 0;
-
-  do {
-    const response = await fetch(url);
-    const data = await response.json();
-
-    if (data.status !== "OK" && data.status !== "ZERO_RESULTS") {
-      console.error("Error en Text Search:", data.status, data.error_message);
-      break;
-    }
-
-    if (Array.isArray(data.results)) {
-      places.push(...data.results);
-    }
-
-    nextPageToken = data.next_page_token || null;
-
-    if (nextPageToken) {
-      // Google pide esperar un ratito antes de usar next_page_token
-      await sleep(2000);
-      url = `https://maps.googleapis.com/maps/api/place/textsearch/json?pagetoken=${nextPageToken}&key=${apiKey}`;
-    }
-
-    safetyCounter += 1;
-  } while (nextPageToken && safetyCounter < 3); // máximo 3 páginas
-
-  return places;
-}
-
-/**
- * Llama a Place Details para obtener teléfono y website
- */
-async function enrichLeadWithDetails(place, apiKey, country) {
-  const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${place.place_id}&fields=formatted_phone_number,international_phone_number,website&key=${apiKey}`;
-
   try {
-    const resp = await fetch(detailsUrl);
-    const json = await resp.json();
+    console.log(`🔍 Buscando con Apify: ${category} en ${city}, ${country}`);
 
-    if (json.status !== "OK" && json.status !== "ZERO_RESULTS") {
-      console.warn("Error en Place Details:", json.status, json.error_message);
-    }
+    const searchQuery = `${category} en ${city}, ${country}`;
 
-    const details = json.result || {};
+    // Configuración optimizada para Apify
+    const apifyConfig = {
+      searchStringsArray: [searchQuery],
+      maxCrawledPlaces: maxResults,
+      maxCrawledPlacesPerSearch: maxResults,
 
-    const rawPhone =
-      details.international_phone_number ||
-      details.formatted_phone_number ||
-      null;
+      // País y lenguaje
+      language: 'es',
+      countryCode: country === 'Bolivia' ? 'BO' : 
+                   country === 'Paraguay' ? 'PY' : 
+                   country === 'España' ? 'ES' :
+                   country === 'Mexico' || country === 'México' ? 'MX' :
+                   country === 'Argentina' ? 'AR' :
+                   country === 'Chile' ? 'CL' :
+                   country === 'Peru' || country === 'Perú' ? 'PE' : 'BO',
 
-    const phone = normalizePhone(rawPhone, country);
-    const website = details.website || null;
-
-    return {
-      name: place.name || null,
-      address: place.formatted_address || null,
-      rating: typeof place.rating === "number" ? place.rating : null,
-      location: place.geometry?.location || null,
-      place_id: place.place_id,
-      phone,
-      website,
+      // OPTIMIZACIONES - Reducir costo
+      maxReviews: 0,
+      maxImages: 0,
+      includeWebResults: false,
+      scrapePhone: true,
+      scrapeEmailFromWebsite: false,
+      scrapeReviews: false,
+      scrapePeopleAlsoSearch: false,
+      scrapeDirections: false,
+      scrapeOpeningHours: true,
     };
-  } catch (err) {
-    console.error("Error llamando a Place Details:", err.message);
-    return {
-      name: place.name || null,
-      address: place.formatted_address || null,
-      rating: typeof place.rating === "number" ? place.rating : null,
-      location: place.geometry?.location || null,
-      place_id: place.place_id,
-      phone: null,
-      website: null,
-    };
+
+    // 1. Iniciar el scraper
+    const runResponse = await axios.post(
+      `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_TOKEN}`,
+      apifyConfig,
+      {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 300000, // 5 minutos
+      }
+    );
+
+    const runId = runResponse.data.data.id;
+    const datasetId = runResponse.data.data.defaultDatasetId;
+
+    console.log(`✅ Scraper iniciado - Run ID: ${runId}`);
+
+    // 2. Esperar resultados
+    const results = await waitForApifyResults(runId, datasetId);
+
+    console.log(`📊 Resultados: ${results.length} lugares encontrados`);
+
+    return results;
+  } catch (error) {
+    console.error(`❌ Error en Apify para "${category}":`, error.message);
+    return [];
   }
 }
 
 /**
- * Endpoint principal: ejecuta la campaña
+ * Esperar a que Apify termine
+ */
+async function waitForApifyResults(runId, datasetId, maxIntentos = 120) {
+  const intervalo = 3000; // 3 segundos
+
+  for (let i = 0; i < maxIntentos; i++) {
+    const statusResponse = await axios.get(
+      `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs/${runId}?token=${APIFY_TOKEN}`
+    );
+
+    const status = statusResponse.data.data.status;
+
+    if (status === 'SUCCEEDED') {
+      const resultsResponse = await axios.get(
+        `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_TOKEN}`
+      );
+      return resultsResponse.data;
+    }
+
+    if (status === 'FAILED' || status === 'ABORTED') {
+      throw new Error(`Scraper ${status.toLowerCase()}`);
+    }
+
+    // Log cada 30 segundos
+    if (i % 10 === 0 && i > 0) {
+      console.log(`⏳ Esperando... ${i * 3}s - Estado: ${status}`);
+    }
+
+    await sleep(intervalo);
+  }
+
+  throw new Error('Timeout: Scraper tardó demasiado');
+}
+
+/**
+ * Formatear resultado de Apify a formato de lead
+ */
+function formatApifyResultToLead(place, country) {
+  const phone = normalizePhone(place.phone, country);
+
+  return {
+    name: place.title || null,
+    address: place.address || null,
+    rating: place.totalScore || null,
+    location: place.location
+      ? {
+          lat: place.location.lat,
+          lng: place.location.lng,
+        }
+      : null,
+    place_id: place.placeId || null,
+    phone: phone,
+    website: place.website || null,
+    category: place.categoryName || null,
+    reviews: place.reviewsCount || 0,
+    hours: place.openingHours || null,
+  };
+}
+
+/**
+ * Endpoint principal: ejecuta la campaña con Apify
  *
- * Espera un body como:
+ * Body esperado:
  * {
  *   "campaignId": "uuid",
  *   "campaignName": "Nombre",
  *   "categories": ["barberías", "spas"],
  *   "city": "Asunción",
  *   "country": "Paraguay",
- *   "centerLat": -25.2637,
- *   "centerLng": -57.5759,
- *   "radiusMeters": 6000
+ *   "maxResultsPerCategory": 200
  * }
  */
-app.post("/run-campaign", async (req, res) => {
+app.post('/run-campaign', async (req, res) => {
   const startTime = Date.now();
 
   try {
@@ -195,111 +211,112 @@ app.post("/run-campaign", async (req, res) => {
       categories = [],
       city,
       country,
-      centerLat,
-      centerLng,
-      radiusMeters,
+      maxResultsPerCategory = 100,
     } = req.body || {};
 
-    // Validaciones básicas
+    // Validaciones
     if (!campaignId || !city || !country) {
       return res.status(400).json({
-        error: "Parámetros inválidos",
+        error: 'Parámetros inválidos',
         details:
-          "Se requieren campaignId, city y country como mínimo para ejecutar la campaña.",
+          'Se requieren campaignId, city y country como mínimo para ejecutar la campaña.',
       });
     }
 
     let categoriesArray = [];
     if (Array.isArray(categories)) {
       categoriesArray = categories;
-    } else if (typeof categories === "string" && categories.trim()) {
-      // Por si algún día viene como string simple
+    } else if (typeof categories === 'string' && categories.trim()) {
       categoriesArray = [categories];
     }
 
     if (!categoriesArray.length) {
       return res.status(400).json({
-        error: "Parámetros inválidos",
+        error: 'Parámetros inválidos',
         details: "Debes enviar al menos una categoría en 'categories'.",
       });
     }
 
-    const apiKey = process.env.GOOGLE_MAPS_API_KEY;
-    if (!apiKey) {
+    // Validar token de Apify
+    if (!APIFY_TOKEN) {
       return res.status(500).json({
-        error: "Falta GOOGLE_MAPS_API_KEY",
+        error: 'Falta APIFY_TOKEN',
         details:
-          "Configura la variable de entorno GOOGLE_MAPS_API_KEY en Railway.",
+          'Configura la variable de entorno APIFY_TOKEN en Railway.',
       });
     }
 
-    // 1) Buscar lugares por todas las categorías
-    const allPlacesMap = new Map(); // place_id -> place
+    console.log(`🚀 Iniciando campaña: ${campaignName || campaignId}`);
+    console.log(`📍 Ubicación: ${city}, ${country}`);
+    console.log(`🏷️ Categorías: ${categoriesArray.join(', ')}`);
+
+    // 1. Buscar lugares con Apify por todas las categorías
+    const allPlacesMap = new Map();
 
     for (const rawCategory of categoriesArray) {
-      const catStr = String(rawCategory || "").trim();
+      const catStr = String(rawCategory || '').trim();
       if (!catStr) continue;
 
-      const rawPlaces = await searchPlacesByCategory({
+      const apifyResults = await searchPlacesWithApify({
         category: catStr,
         city,
         country,
-        apiKey,
-        centerLat:
-          typeof centerLat === "number" && !Number.isNaN(centerLat)
-            ? centerLat
-            : undefined,
-        centerLng:
-          typeof centerLng === "number" && !Number.isNaN(centerLng)
-            ? centerLng
-            : undefined,
-        radiusMeters:
-          typeof radiusMeters === "number" && !Number.isNaN(radiusMeters)
-            ? radiusMeters
-            : undefined,
+        maxResults: maxResultsPerCategory,
       });
 
-      // 👉 Por ahora NO filtramos por nombre/tipo para no perder leads.
-      // Sólo deduplicamos por place_id.
-      for (const p of rawPlaces) {
-        if (!p.place_id) continue;
-        if (!allPlacesMap.has(p.place_id)) {
-          allPlacesMap.set(p.place_id, p);
+      // Agregar al mapa (deduplicar por place_id)
+      for (const place of apifyResults) {
+        const placeId = place.placeId || place.place_id;
+        if (!placeId) continue;
+        if (!allPlacesMap.has(placeId)) {
+          allPlacesMap.set(placeId, place);
         }
+      }
+
+      // Pequeña pausa entre categorías
+      if (categoriesArray.length > 1) {
+        await sleep(2000);
       }
     }
 
     const allPlaces = Array.from(allPlacesMap.values());
 
-    // Limitamos para no matar la API (ajusta si quieres más)
-    const MAX_LEADS = 200;
-    const limitedPlaces = allPlaces.slice(0, MAX_LEADS);
+    console.log(`📊 Total de lugares únicos encontrados: ${allPlaces.length}`);
 
-    // 2) Enriquecer cada lugar con teléfono y website
-    const leads = [];
-    for (const place of limitedPlaces) {
-      const lead = await enrichLeadWithDetails(place, apiKey, country);
-      leads.push(lead);
-      // Pequeño delay para no saturar Place Details
-      await sleep(150);
-    }
+    // 2. Filtrar solo los que tienen teléfono
+    const placesWithPhone = allPlaces.filter(
+      (p) => p.phone && p.phone.trim() !== ''
+    );
 
-    // 3) Calcular resumen
+    console.log(`📞 Lugares con teléfono: ${placesWithPhone.length}`);
+
+    // 3. Formatear a leads
+    const leads = placesWithPhone.map((place) =>
+      formatApifyResultToLead(place, country)
+    );
+
+    // 4. Calcular resumen
     const total = leads.length;
     const ratings = leads
-      .map((l) => (typeof l.rating === "number" ? l.rating : null))
+      .map((l) => (typeof l.rating === 'number' ? l.rating : null))
       .filter((r) => r !== null);
 
     const avgRating =
       ratings.length > 0
         ? Number(
-            (ratings.reduce((sum, r) => sum + r, 0) / ratings.length).toFixed(2),
+            (
+              ratings.reduce((sum, r) => sum + r, 0) / ratings.length
+            ).toFixed(2)
           )
         : 0;
 
     const executionTime = Date.now() - startTime;
 
-    // 4) Respuesta final (formato amigable para n8n / Lovable)
+    console.log(
+      `✅ Campaña completada en ${(executionTime / 1000).toFixed(2)}s`
+    );
+
+    // 5. Respuesta
     return res.json({
       campaignId,
       campaignName,
@@ -310,24 +327,106 @@ app.post("/run-campaign", async (req, res) => {
       executionTime,
       summary: {
         total,
+        totalFound: allPlaces.length,
+        withPhone: placesWithPhone.length,
         avgRating,
       },
     });
   } catch (err) {
-    console.error("Error en /run-campaign:", err);
+    console.error('❌ Error en /run-campaign:', err);
 
     return res.status(500).json({
-      error: "Error ejecutando campaña",
-      details: err.message || "Error desconocido",
+      error: 'Error ejecutando campaña',
+      details: err.message || 'Error desconocido',
     });
   }
 });
 
-// Health check simple
-app.get("/", (_req, res) => {
-  res.send("Komerzia Market Hunter MCP is running.");
+/**
+ * Endpoint simple para búsqueda individual
+ */
+app.post('/api/search-places', async (req, res) => {
+  try {
+    const { query, location, maxResults } = req.body;
+
+    if (!query) {
+      return res.status(400).json({
+        success: false,
+        error: 'El campo "query" es requerido',
+      });
+    }
+
+    const searchQuery = location ? `${query} ${location}` : query;
+
+    const apifyConfig = {
+      searchStringsArray: [searchQuery],
+      maxCrawledPlaces: maxResults || 100,
+      language: 'es',
+      countryCode: 'BO',
+      maxReviews: 0,
+      maxImages: 0,
+      includeWebResults: false,
+      scrapePhone: true,
+      scrapeEmailFromWebsite: false,
+    };
+
+    const runResponse = await axios.post(
+      `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_TOKEN}`,
+      apifyConfig,
+      { headers: { 'Content-Type': 'application/json' }, timeout: 300000 }
+    );
+
+    const runId = runResponse.data.data.id;
+    const datasetId = runResponse.data.data.defaultDatasetId;
+
+    const results = await waitForApifyResults(runId, datasetId);
+
+    const withPhone = results.filter((r) => r.phone && r.phone.trim() !== '');
+
+    const formatted = withPhone.map((place) => ({
+      nombre: place.title,
+      telefono: place.phone,
+      direccion: place.address,
+      sitioWeb: place.website,
+      ubicacion: place.location,
+      rating: place.totalScore,
+      categoria: place.categoryName,
+    }));
+
+    res.json({
+      success: true,
+      query: searchQuery,
+      totalEncontrados: results.length,
+      totalConTelefono: withPhone.length,
+      resultados: formatted,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+// Health check
+app.get('/', (_req, res) => {
+  res.json({
+    message: 'Komerzia Market Hunter MCP is running',
+    version: '2.0 (Apify)',
+    apifyConfigured: !!APIFY_TOKEN,
+  });
+});
+
+app.get('/health', (_req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'Market Hunter MCP',
+    apifyConfigured: !!APIFY_TOKEN,
+    timestamp: new Date().toISOString(),
+  });
 });
 
 app.listen(PORT, () => {
-  console.log(`Market Hunter MCP listening on port ${PORT}`);
+  console.log(`🚀 Market Hunter MCP listening on port ${PORT}`);
+  console.log(`📍 Version: 2.0 (Apify Integration)`);
 });
