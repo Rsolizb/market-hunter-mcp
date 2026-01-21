@@ -45,7 +45,7 @@ function normalizePhone(phone, country) {
   return `${dialCode} ${clean}`;
 }
 
-async function searchPlacesWithApify({ category, city, country, maxResults = 100 }) {
+async function searchPlacesWithApify({ category, city, country, maxResults = 200 }) {
   try {
     console.log(`🔍 Buscando con Apify: ${category} en ${city}, ${country}`);
 
@@ -55,8 +55,12 @@ async function searchPlacesWithApify({ category, city, country, maxResults = 100
       searchStringsArray: [searchQuery],
       maxCrawledPlaces: maxResults,
       language: 'es',
+      maxAutomaticZoomOut: 10,
+      includeWebResults: false,
+      scrapeReviews: false,
       scrapePhotos: false,
-      scrapeReviews: false
+      maxImages: 0,
+      maxReviews: 0
     };
 
     const runResponse = await axios.post(
@@ -272,10 +276,14 @@ app.post('/api/search-places', async (req, res) => {
 
     const apifyConfig = {
       searchStringsArray: [searchQuery],
-      maxCrawledPlaces: maxResults || 100,
+      maxCrawledPlaces: maxResults || 200,
       language: 'es',
+      maxAutomaticZoomOut: 10,
+      includeWebResults: false,
+      scrapeReviews: false,
       scrapePhotos: false,
-      scrapeReviews: false
+      maxImages: 0,
+      maxReviews: 0
     };
 
     const runResponse = await axios.post(
