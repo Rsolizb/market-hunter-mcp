@@ -147,7 +147,7 @@ app.post('/run-campaign', async (req, res) => {
       categories = [],
       city,
       country,
-      maxResultsPerCategory = 100,
+      maxResultsPerCategory = 200,
     } = req.body || {};
 
     if (!campaignId || !city || !country) {
