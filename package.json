@@ -1,14 +1,66 @@
 {
   "name": "market-hunter-mcp",
-  "version": "1.0.0",
-  "description": "MCP de Komerzia Market Hunter para buscar negocios por ciudad y categoría usando Google Places API",
+  "version": "2.0.0",
+  "description": "Komerzia Market Hunter - Apify Integration",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js"
   },
   "dependencies": {
     "express": "^4.18.2",
+    "axios": "^1.6.0",
     "cors": "^2.8.5",
-    "node-fetch": "^2.7.0"
+    "dotenv": "^16.3.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
+```
+
+6. Escribe: `Actualizar dependencias para Apify`
+7. Haz clic en **"Commit changes"**
+
+---
+
+### Paso 6: Agregar APIFY_TOKEN en Railway
+
+**IMPORTANTE**: Ya NO necesitas `GOOGLE_MAPS_API_KEY`. Ahora usas `APIFY_TOKEN`.
+
+1. Ve a https://railway.app/
+2. Abre tu proyecto **market-hunter-mcp**
+3. Haz clic en **"Variables"**
+4. **OPCIÓN A - Si ya tienes APIFY_TOKEN:**
+   - Verifica que esté correcto
+   
+   **OPCIÓN B - Si NO lo tienes:**
+   - Haz clic en **"+ New Variable"**
+   - **Name**: `APIFY_TOKEN`
+   - **Value**: Tu token de Apify (algo como `apify_api_XXXXXXXXX`)
+   - Haz clic en **"Add"**
+
+5. **OPCIONAL**: Puedes BORRAR `GOOGLE_MAPS_API_KEY` si ya no la usas (ya no la necesitamos)
+
+---
+
+### Paso 7: Esperar que Railway actualice
+
+Railway detectará los cambios automáticamente:
+
+1. Ve a la pestaña **"Deployments"**
+2. Verás un nuevo deployment en progreso
+3. Espera 2-3 minutos
+4. Debe mostrar **"Success"** ✅
+
+Si hay error, haz clic en el deployment y mira los **Logs**.
+
+---
+
+### Paso 8: Probar que funciona
+
+#### Prueba 1: Health Check
+
+Abre en tu navegador:
+```
+https://market-hunter-mcp.up.railway.app/health
