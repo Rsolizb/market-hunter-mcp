@@ -16,3 +16,55 @@
     "node": "18.x"
   }
 }
+```
+
+4. Scroll down
+5. Commit message: `Fix quotes in package.json`
+6. Haz clic en **"Commit changes"**
+
+---
+
+## ⚠️ IMPORTANTE: Cómo copiar correctamente
+
+Cuando copies el código de arriba:
+
+1. ✅ **Copia directo desde este chat** (las comillas ya están correctas)
+2. ❌ **NO lo pegues en Word/Pages primero** (cambiaría las comillas)
+3. ❌ **NO uses un editor que "embellezca" las comillas**
+4. ✅ **Pega directo en GitHub**
+
+---
+
+## 🔍 Diferencia visual de las comillas:
+```
+❌ Comillas tipográficas (curvas):
+"name": "market-hunter-mcp"
+↑↑↑↑    ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
+
+✅ Comillas rectas (estándar JSON):
+"name": "market-hunter-mcp"
+↑↑↑↑    ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
+```
+
+Las comillas tipográficas se ven "elegantes" pero **rompen el JSON**.
+
+---
+
+## Paso 2: Esperar el nuevo deploy
+
+Después de guardar los cambios:
+
+1. Railway detectará automáticamente el cambio
+2. Iniciará un nuevo deployment
+3. Esta vez debería funcionar ✅
+
+---
+
+## Paso 3: Verificar que funcionó
+
+1. Ve a Railway → Deployments
+2. Espera 2-3 minutos
+3. El nuevo deployment debería mostrar **"Success"** (verde)
+4. Luego abre en tu navegador:
+```
+   https://market-hunter-mcp-production.up.railway.app/health
