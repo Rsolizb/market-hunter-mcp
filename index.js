@@ -62,10 +62,12 @@ async function searchPlacesWithApify({ category, city, country, maxResults = 200
     console.log(`📤 Config:`, JSON.stringify(apifyConfig, null, 2));
 
     const runResponse = await axios.post(
-      `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?maxItems=${maxResults}&maxTotalChargeUsd=5`,
+      `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_TOKEN}&maxItems=${maxResults}&maxTotalChargeUsd=5`,
       apifyConfig,
       {
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${APIFY_TOKEN}` },
+        headers: { 
+          'Content-Type': 'application/json'
+        },
         timeout: 300000,
       }
     );
@@ -74,6 +76,8 @@ async function searchPlacesWithApify({ category, city, country, maxResults = 200
     const datasetId = runResponse.data.data.defaultDatasetId;
 
     console.log(`✅ Scraper iniciado - Run ID: ${runId}`);
+    console.log(`💰 Límite de gasto: $5 USD`);
+    console.log(`📊 Máximo de items: ${maxResults}`);
 
     const results = await waitForApifyResults(runId, datasetId);
 
@@ -82,6 +86,9 @@ async function searchPlacesWithApify({ category, city, country, maxResults = 200
     return results;
   } catch (error) {
     console.error(`❌ Error en Apify:`, error.message);
+    if (error.response?.data) {
+      console.error(`📋 Detalles:`, error.response.data);
+    }
     return [];
   }
 }
