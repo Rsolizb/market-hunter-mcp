@@ -53,27 +53,47 @@ async function searchPlacesWithApify({ category, city, country, maxResults = 200
       maxImages: 0
     };
 
+    console.log(`📤 Enviando a Apify...`);
+
+    // Timeout debe ser mayor que waitForFinish (30s)
     const runResponse = await axios.post(
       `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_TOKEN}&waitForFinish=30&maxItems=${maxResults}&maxTotalChargeUsd=5`,
       apifyConfig,
       {
         headers: { 'Content-Type': 'application/json' },
-        timeout: 10000,
+        timeout: 45000, // 45 segundos (más que waitForFinish)
       }
     );
 
     const runId = runResponse.data.data.id;
     const datasetId = runResponse.data.data.defaultDatasetId;
+    const status = runResponse.data.data.status;
 
     console.log(`✅ Run ID: ${runId}`);
+    console.log(`📊 Estado: ${status}`);
 
+    // Si ya terminó en los 30 segundos, obtener resultados directamente
+    if (status === 'SUCCEEDED') {
+      const resultsResponse = await axios.get(
+        `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_TOKEN}`,
+        { timeout: 10000 }
+      );
+      console.log(`📊 ${resultsResponse.data.length} resultados (inmediatos)`);
+      return resultsResponse.data;
+    }
+
+    // Si no terminó, seguir esperando
+    console.log(`⏳ Continuando espera...`);
     const results = await waitForApifyResults(runId, datasetId);
 
-    console.log(`📊 ${results.length} resultados`);
+    console.log(`📊 ${results.length} resultados (después de espera)`);
 
     return results;
   } catch (error) {
-    console.error(`❌ Error:`, error.message);
+    console.error(`❌ Error en Apify:`, error.message);
+    if (error.response?.data) {
+      console.error(`📋 Detalles:`, JSON.stringify(error.response.data, null, 2));
+    }
     return [];
   }
 }
@@ -198,7 +218,11 @@ app.post('/run-campaign', async (req, res) => {
     }
 
     const allPlaces = Array.from(allPlacesMap.values());
+    console.log(`📊 Total únicos: ${allPlaces.length}`);
+    
     const placesWithPhone = allPlaces.filter((p) => p.phone && p.phone.trim() !== '');
+    console.log(`📞 Con teléfono: ${placesWithPhone.length}`);
+    
     const leads = placesWithPhone.map((place) => formatApifyResultToLead(place, country));
 
     const total = leads.length;
@@ -206,7 +230,7 @@ app.post('/run-campaign', async (req, res) => {
     const avgRating = ratings.length > 0 ? Number((ratings.reduce((sum, r) => sum + r, 0) / ratings.length).toFixed(2)) : 0;
     const executionTime = Date.now() - startTime;
 
-    console.log(`✅ ${(executionTime / 1000).toFixed(2)}s`);
+    console.log(`✅ Completado en ${(executionTime / 1000).toFixed(2)}s`);
 
     return res.json({
       campaignId,
@@ -224,7 +248,7 @@ app.post('/run-campaign', async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('❌', err);
+    console.error('❌ Error:', err);
     return res.status(500).json({
       error: 'Error ejecutando campaña',
       details: err.message,
