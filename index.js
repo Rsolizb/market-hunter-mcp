@@ -54,7 +54,7 @@ async function searchPlacesWithApify({ category, city, country, maxResults = 200
     };
 
     const runResponse = await axios.post(
-      `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_TOKEN}&waitForFinish=0&maxItems=${maxResults}&maxTotalChargeUsd=5`,
+      `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_TOKEN}&waitForFinish=30&maxItems=${maxResults}&maxTotalChargeUsd=5`,
       apifyConfig,
       {
         headers: { 'Content-Type': 'application/json' },
