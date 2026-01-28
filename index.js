@@ -10,7 +10,7 @@ app.use(cors());
 app.use(express.json());
 
 const APIFY_TOKEN = process.env.APIFY_TOKEN;
-const APIFY_ACTOR_ID = 'compass~crawler-google-places';
+const APIFY_ACTOR_ID = 'compass~google-maps-extractor';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -47,17 +47,19 @@ async function searchPlacesWithApify({ category, city, country, maxResults = 200
     const apifyConfig = {
       searchStringsArray: [searchQuery],
       maxCrawledPlaces: maxResults,
-      maxCrawledPlacesPerSearch: maxResults,
       language: 'es',
-      maxAutomaticZoomOut: 15,
-      includeWebResults: false,
-      scrapeReviews: false,
-      scrapePhotos: false,
+      deeperCityScrape: true,
+      maxReviews: 0,
       maxImages: 0,
-      maxReviews: 0
+      scrapeReviewerName: false,
+      scrapeReviewerId: false,
+      scrapeReviewerUrl: false,
+      scrapeReviewId: false,
+      scrapeReviewUrl: false,
+      scrapeResponseFromOwnerText: false
     };
 
-    console.log(`📤 Config Apify:`, JSON.stringify(apifyConfig, null, 2));
+    console.log(`📤 Config:`, JSON.stringify(apifyConfig, null, 2));
 
     const runResponse = await axios.post(
       `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_TOKEN}`,
@@ -79,7 +81,7 @@ async function searchPlacesWithApify({ category, city, country, maxResults = 200
 
     return results;
   } catch (error) {
-    console.error(`❌ Error en Apify para "${category}":`, error.message);
+    console.error(`❌ Error en Apify:`, error.message);
     return [];
   }
 }
@@ -112,7 +114,7 @@ async function waitForApifyResults(runId, datasetId, maxIntentos = 150) {
     await sleep(intervalo);
   }
 
-  throw new Error('Timeout: Scraper tardó demasiado');
+  throw new Error('Timeout');
 }
 
 function formatApifyResultToLead(place, country) {
@@ -148,7 +150,6 @@ app.post('/run-campaign', async (req, res) => {
     if (!campaignId || !city || !country) {
       return res.status(400).json({
         error: 'Parámetros inválidos',
-        details: 'Se requieren campaignId, city y country.',
       });
     }
 
@@ -161,22 +162,20 @@ app.post('/run-campaign', async (req, res) => {
 
     if (!categoriesArray.length) {
       return res.status(400).json({
-        error: 'Parámetros inválidos',
-        details: 'Debes enviar al menos una categoría.',
+        error: 'Se requiere al menos una categoría',
       });
     }
 
     if (!APIFY_TOKEN) {
       return res.status(500).json({
         error: 'Falta APIFY_TOKEN',
-        details: 'Configura APIFY_TOKEN en Railway.',
       });
     }
 
-    console.log(`🚀 Iniciando campaña: ${campaignName || campaignId}`);
-    console.log(`📍 Ubicación: ${city}, ${country}`);
-    console.log(`🏷️ Categorías: ${categoriesArray.join(', ')}`);
-    console.log(`🔢 Max por categoría: ${maxResultsPerCategory}`);
+    console.log(`🚀 Campaña: ${campaignName || campaignId}`);
+    console.log(`📍 ${city}, ${country}`);
+    console.log(`🏷️ ${categoriesArray.join(', ')}`);
+    console.log(`🔢 Max: ${maxResultsPerCategory}`);
 
     const allPlacesMap = new Map();
 
@@ -205,10 +204,10 @@ app.post('/run-campaign', async (req, res) => {
     }
 
     const allPlaces = Array.from(allPlacesMap.values());
-    console.log(`📊 Total de lugares únicos encontrados: ${allPlaces.length}`);
+    console.log(`📊 Total únicos: ${allPlaces.length}`);
 
     const placesWithPhone = allPlaces.filter((p) => p.phone && p.phone.trim() !== '');
-    console.log(`📞 Lugares con teléfono: ${placesWithPhone.length}`);
+    console.log(`📞 Con teléfono: ${placesWithPhone.length}`);
 
     const leads = placesWithPhone.map((place) => formatApifyResultToLead(place, country));
 
@@ -217,7 +216,7 @@ app.post('/run-campaign', async (req, res) => {
     const avgRating = ratings.length > 0 ? Number((ratings.reduce((sum, r) => sum + r, 0) / ratings.length).toFixed(2)) : 0;
     const executionTime = Date.now() - startTime;
 
-    console.log(`✅ Campaña completada en ${(executionTime / 1000).toFixed(2)}s`);
+    console.log(`✅ Completado en ${(executionTime / 1000).toFixed(2)}s`);
 
     return res.json({
       campaignId,
@@ -235,18 +234,18 @@ app.post('/run-campaign', async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('❌ Error en /run-campaign:', err);
+    console.error('❌ Error:', err);
     return res.status(500).json({
       error: 'Error ejecutando campaña',
-      details: err.message || 'Error desconocido',
+      details: err.message,
     });
   }
 });
 
 app.get('/', (_req, res) => {
   res.json({
-    message: 'Komerzia Market Hunter MCP is running',
-    version: '2.0 (Apify)',
+    message: 'Komerzia Market Hunter MCP',
+    version: '2.0',
     apifyConfigured: !!APIFY_TOKEN,
   });
 });
@@ -261,6 +260,6 @@ app.get('/health', (_req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Market Hunter MCP listening on port ${PORT}`);
-  console.log(`📍 Version: 2.0 (Apify Integration)`);
+  console.log(`🚀 Market Hunter MCP on port ${PORT}`);
+  console.log(`📍 Version: 2.0`);
 });
