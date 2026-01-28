@@ -40,7 +40,7 @@ function normalizePhone(phone, country) {
 
 async function searchPlacesWithApify({ category, city, country, maxResults = 200 }) {
   try {
-    console.log(`🔍 Buscando con Apify: ${category} en ${city}, ${country} (max: ${maxResults})`);
+    console.log(`🔍 Buscando: ${category} en ${city}, ${country} (max: ${maxResults})`);
 
     const searchQuery = `${category} en ${city}, ${country}`;
 
@@ -50,89 +50,72 @@ async function searchPlacesWithApify({ category, city, country, maxResults = 200
       language: 'es',
       deeperCityScrape: true,
       maxReviews: 0,
-      maxImages: 0,
-      scrapeReviewerName: false,
-      scrapeReviewerId: false,
-      scrapeReviewerUrl: false,
-      scrapeReviewId: false,
-      scrapeReviewUrl: false,
-      scrapeResponseFromOwnerText: false
+      maxImages: 0
     };
 
-    console.log(`📤 Config:`, JSON.stringify(apifyConfig, null, 2));
-
     const runResponse = await axios.post(
-      `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_TOKEN}&waitForFinish=60&maxItems=${maxResults}&maxTotalChargeUsd=5`,
+      `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_TOKEN}&waitForFinish=0&maxItems=${maxResults}&maxTotalChargeUsd=5`,
       apifyConfig,
       {
-        headers: { 
-          'Content-Type': 'application/json'
-        },
-        timeout: 300000,
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 10000,
       }
     );
 
     const runId = runResponse.data.data.id;
     const datasetId = runResponse.data.data.defaultDatasetId;
-    const status = runResponse.data.data.status;
 
-    console.log(`✅ Scraper iniciado - Run ID: ${runId}`);
-    console.log(`⏱️ Wait for finish: 60 segundos`);
-    console.log(`📊 Estado: ${status}`);
-    console.log(`💰 Límite de gasto: $5 USD`);
-    console.log(`📊 Máximo de items: ${maxResults}`);
-
-    if (status === 'SUCCEEDED') {
-      const resultsResponse = await axios.get(
-        `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_TOKEN}`
-      );
-      console.log(`📊 Resultados inmediatos: ${resultsResponse.data.length} lugares`);
-      return resultsResponse.data;
-    }
+    console.log(`✅ Run ID: ${runId}`);
 
     const results = await waitForApifyResults(runId, datasetId);
 
-    console.log(`📊 Resultados: ${results.length} lugares encontrados`);
+    console.log(`📊 ${results.length} resultados`);
 
     return results;
   } catch (error) {
-    console.error(`❌ Error en Apify:`, error.message);
-    if (error.response?.data) {
-      console.error(`📋 Detalles:`, error.response.data);
-    }
+    console.error(`❌ Error:`, error.message);
     return [];
   }
 }
 
-async function waitForApifyResults(runId, datasetId, maxIntentos = 150) {
-  const intervalo = 3000;
+async function waitForApifyResults(runId, datasetId, maxIntentos = 120) {
+  const intervalo = 2000;
 
   for (let i = 0; i < maxIntentos; i++) {
-    const statusResponse = await axios.get(
-      `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs/${runId}?token=${APIFY_TOKEN}`
-    );
-
-    const status = statusResponse.data.data.status;
-
-    if (status === 'SUCCEEDED') {
-      const resultsResponse = await axios.get(
-        `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_TOKEN}`
+    try {
+      const statusResponse = await axios.get(
+        `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs/${runId}?token=${APIFY_TOKEN}`,
+        { timeout: 5000 }
       );
-      return resultsResponse.data;
-    }
 
-    if (status === 'FAILED' || status === 'ABORTED') {
-      throw new Error(`Scraper ${status.toLowerCase()}`);
-    }
+      const status = statusResponse.data.data.status;
 
-    if (i % 10 === 0 && i > 0) {
-      console.log(`⏳ Esperando... ${i * 3}s - Estado: ${status}`);
-    }
+      if (status === 'SUCCEEDED') {
+        const resultsResponse = await axios.get(
+          `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_TOKEN}`,
+          { timeout: 10000 }
+        );
+        return resultsResponse.data;
+      }
 
-    await sleep(intervalo);
+      if (status === 'FAILED' || status === 'ABORTED') {
+        console.error(`❌ Scraper ${status}`);
+        return [];
+      }
+
+      if (i % 10 === 0 && i > 0) {
+        console.log(`⏳ ${i * 2}s - ${status}`);
+      }
+
+      await sleep(intervalo);
+    } catch (err) {
+      console.error(`⚠️ Error consultando estado:`, err.message);
+      await sleep(intervalo);
+    }
   }
 
-  throw new Error('Timeout');
+  console.error('⏱️ Timeout alcanzado');
+  return [];
 }
 
 function formatApifyResultToLead(place, country) {
@@ -166,9 +149,7 @@ app.post('/run-campaign', async (req, res) => {
     } = req.body || {};
 
     if (!campaignId || !city || !country) {
-      return res.status(400).json({
-        error: 'Parámetros inválidos',
-      });
+      return res.status(400).json({ error: 'Parámetros inválidos' });
     }
 
     let categoriesArray = [];
@@ -179,21 +160,16 @@ app.post('/run-campaign', async (req, res) => {
     }
 
     if (!categoriesArray.length) {
-      return res.status(400).json({
-        error: 'Se requiere al menos una categoría',
-      });
+      return res.status(400).json({ error: 'Se requiere categoría' });
     }
 
     if (!APIFY_TOKEN) {
-      return res.status(500).json({
-        error: 'Falta APIFY_TOKEN',
-      });
+      return res.status(500).json({ error: 'Falta APIFY_TOKEN' });
     }
 
-    console.log(`🚀 Campaña: ${campaignName || campaignId}`);
+    console.log(`🚀 ${campaignName || campaignId}`);
     console.log(`📍 ${city}, ${country}`);
     console.log(`🏷️ ${categoriesArray.join(', ')}`);
-    console.log(`🔢 Max: ${maxResultsPerCategory}`);
 
     const allPlacesMap = new Map();
 
@@ -222,11 +198,7 @@ app.post('/run-campaign', async (req, res) => {
     }
 
     const allPlaces = Array.from(allPlacesMap.values());
-    console.log(`📊 Total únicos: ${allPlaces.length}`);
-
     const placesWithPhone = allPlaces.filter((p) => p.phone && p.phone.trim() !== '');
-    console.log(`📞 Con teléfono: ${placesWithPhone.length}`);
-
     const leads = placesWithPhone.map((place) => formatApifyResultToLead(place, country));
 
     const total = leads.length;
@@ -234,7 +206,7 @@ app.post('/run-campaign', async (req, res) => {
     const avgRating = ratings.length > 0 ? Number((ratings.reduce((sum, r) => sum + r, 0) / ratings.length).toFixed(2)) : 0;
     const executionTime = Date.now() - startTime;
 
-    console.log(`✅ Completado en ${(executionTime / 1000).toFixed(2)}s`);
+    console.log(`✅ ${(executionTime / 1000).toFixed(2)}s`);
 
     return res.json({
       campaignId,
@@ -252,7 +224,7 @@ app.post('/run-campaign', async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('❌ Error:', err);
+    console.error('❌', err);
     return res.status(500).json({
       error: 'Error ejecutando campaña',
       details: err.message,
@@ -278,15 +250,5 @@ app.get('/health', (_req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Market Hunter MCP on port ${PORT}`);
-  console.log(`📍 Version: 2.0`);
+  console.log(`🚀 MCP on port ${PORT}`);
 });
-```
-
----
-
-## 🔑 Cambios clave:
-
-1. **URL con `waitForFinish=60`:**
-```
-   ?token=${APIFY_TOKEN}&waitForFinish=60&maxItems=${maxResults}&maxTotalChargeUsd=5
