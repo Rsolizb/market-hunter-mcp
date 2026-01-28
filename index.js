@@ -62,7 +62,7 @@ async function searchPlacesWithApify({ category, city, country, maxResults = 200
     console.log(`📤 Config:`, JSON.stringify(apifyConfig, null, 2));
 
     const runResponse = await axios.post(
-      `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_TOKEN}&maxItems=${maxResults}&maxTotalChargeUsd=5`,
+      `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_TOKEN}&waitForFinish=60&maxItems=${maxResults}&maxTotalChargeUsd=5`,
       apifyConfig,
       {
         headers: { 
@@ -74,10 +74,21 @@ async function searchPlacesWithApify({ category, city, country, maxResults = 200
 
     const runId = runResponse.data.data.id;
     const datasetId = runResponse.data.data.defaultDatasetId;
+    const status = runResponse.data.data.status;
 
     console.log(`✅ Scraper iniciado - Run ID: ${runId}`);
+    console.log(`⏱️ Wait for finish: 60 segundos`);
+    console.log(`📊 Estado: ${status}`);
     console.log(`💰 Límite de gasto: $5 USD`);
     console.log(`📊 Máximo de items: ${maxResults}`);
+
+    if (status === 'SUCCEEDED') {
+      const resultsResponse = await axios.get(
+        `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_TOKEN}`
+      );
+      console.log(`📊 Resultados inmediatos: ${resultsResponse.data.length} lugares`);
+      return resultsResponse.data;
+    }
 
     const results = await waitForApifyResults(runId, datasetId);
 
@@ -270,3 +281,12 @@ app.listen(PORT, () => {
   console.log(`🚀 Market Hunter MCP on port ${PORT}`);
   console.log(`📍 Version: 2.0`);
 });
+```
+
+---
+
+## 🔑 Cambios clave:
+
+1. **URL con `waitForFinish=60`:**
+```
+   ?token=${APIFY_TOKEN}&waitForFinish=60&maxItems=${maxResults}&maxTotalChargeUsd=5
