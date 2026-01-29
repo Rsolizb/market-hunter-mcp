@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
+const GOOGLE_MAPS__KEY = process.env.GOOGLE_MAPS__KEY;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -25,7 +25,6 @@ const COUNTRY_DIAL_CODES = {
   Peru: '+51',
   Perú: '+51',
 };
-
 function normalizePhone(phone, country) {
   if (!phone || typeof phone !== 'string') return null;
   const trimmed = phone.trim();
@@ -34,26 +33,25 @@ function normalizePhone(phone, country) {
   if (!dialCode) return trimmed;
   let clean = trimmed.replace(/^\(0\)/, '').trim();
   clean = clean.replace(/^0+/, '').trim();
-  return `${dialCode} ${clean}`;
+  return dialCode + ' ' + clean;
 }
-
 async function searchWithGooglePlaces(category, city, country, maxResults) {
   try {
-    console.log(`🔍 ${category} in ${city}, ${country}`);
+    console.log('Buscando: ' + category + ' in ' + city + ', ' + country);
 
     const numSearches = Math.ceil(maxResults / 60);
     const allPlaces = new Map();
     
     const searchVariations = [
-      `${category} ${city} ${country}`,
-      `${category} near ${city} ${country}`,
-      `best ${category} ${city} ${country}`,
-      `top ${category} ${city} ${country}`,
+      category + ' ' + city + ' ' + country,
+      category + ' near ' + city + ' ' + country,
+      'best ' + category + ' ' + city + ' ' + country,
+      'top ' + category + ' ' + city + ' ' + country,
     ];
 
     for (let i = 0; i < Math.min(numSearches, searchVariations.length); i++) {
       const query = searchVariations[i];
-      const places = await searchGooglePlacesAPI(query);
+      const places = await searchGooglePlaces(query);
       
       for (const place of places) {
         if (!allPlaces.has(place.place_id)) {
@@ -69,23 +67,23 @@ async function searchWithGooglePlaces(category, city, country, maxResults) {
     }
 
     const results = Array.from(allPlaces.values());
-    console.log(`📊 ${results.length} resultados`);
+    console.log('Resultados: ' + results.length);
     return results;
 
   } catch (error) {
-    console.error(`❌ ${error.message}`);
+    console.error('Error: ' + error.message);
     return [];
   }
 }
 
-async function searchGooglePlacesAPI(query) {
+async function searchGooglePlaces(query) {
   try {
     const response = await axios.get(
-      'https://maps.googleapis.com/maps/api/place/textsearch/json',
+      'https://maps.googles.com/maps//place/textsearch/json',
       {
         params: {
           query: query,
-          key: GOOGLE_MAPS_API_KEY,
+          key: GOOGLE_MAPS__KEY,
           language: 'es'
         },
         timeout: 10000
@@ -93,7 +91,7 @@ async function searchGooglePlacesAPI(query) {
     );
 
     if (response.data.status !== 'OK') {
-      console.error(`Google API status: ${response.data.status}`);
+      console.error('Google  status: ' + response.data.status);
       return [];
     }
 
@@ -104,21 +102,18 @@ async function searchGooglePlacesAPI(query) {
       try {
         const details = await getPlaceDetails(place.place_id);
         if (details) {
-          detailedPlaces.push({
-            ...place,
-            ...details
-          });
+          detailedPlaces.push(Object.assign({}, place, details));
         }
         await sleep(100);
       } catch (err) {
-        console.error(`Error obteniendo detalles: ${err.message}`);
+        console.error('Error obteniendo detalles: ' + err.message);
       }
     }
 
     return detailedPlaces;
 
   } catch (error) {
-    console.error(`Error en Google Places API: ${error.message}`);
+    console.error('Error en Google Places : ' + error.message);
     return [];
   }
 }
@@ -126,12 +121,12 @@ async function searchGooglePlacesAPI(query) {
 async function getPlaceDetails(placeId) {
   try {
     const response = await axios.get(
-      'https://maps.googleapis.com/maps/api/place/details/json',
+      'https://maps.googles.com/maps//place/details/json',
       {
         params: {
           place_id: placeId,
           fields: 'formatted_phone_number,international_phone_number,website,opening_hours,url',
-          key: GOOGLE_MAPS_API_KEY,
+          key: GOOGLE_MAPS__KEY,
           language: 'es'
         },
         timeout: 5000
@@ -147,58 +142,70 @@ async function getPlaceDetails(placeId) {
     return null;
   }
 }
-
 function formatGooglePlaceToLead(place, country) {
   const phone = normalizePhone(
     place.formatted_phone_number || place.international_phone_number,
     country
   );
 
+  let location = null;
+  if (place.geometry && place.geometry.location) {
+    location = {
+      lat: place.geometry.location.lat,
+      lng: place.geometry.location.lng
+    };
+  }
+
+  let category = null;
+  if (place.types && place.types.length > 0) {
+    category = place.types[0];
+  }
+
+  let hours = null;
+  if (place.opening_hours && place.opening_hours.weekday_text) {
+    hours = place.opening_hours.weekday_text.join(', ');
+  }
+
   return {
     name: place.name || null,
     address: place.formatted_address || null,
     rating: place.rating || null,
-    location: place.geometry && place.geometry.location ? {
-      lat: place.geometry.location.lat,
-      lng: place.geometry.location.lng
-    } : null,
+    location: location,
     place_id: place.place_id || null,
     phone: phone,
     website: place.website || null,
-    category: place.types && place.types.length > 0 ? place.types[0] : null,
+    category: category,
     reviews: place.user_ratings_total || 0,
-    hours: place.opening_hours && place.opening_hours.weekday_text ? place.opening_hours.weekday_text.join(', ') : null,
+    hours: hours,
   };
 }
-
 app.post('/run-campaign', async (req, res) => {
   const startTime = Date.now();
 
   try {
-    const {
-      campaignId,
-      campaignName,
-      categories = [],
-      city,
-      country,
-      maxResultsPerCategory = 200,
-    } = req.body || {};
+    const body = req.body || {};
+    const campaignId = body.campaignId;
+    const campaignName = body.campaignName;
+    const categories = body.categories || [];
+    const city = body.city;
+    const country = body.country;
+    const maxResultsPerCategory = body.maxResultsPerCategory || 200;
 
     if (!campaignId || !city || !country) {
-      return res.status(400).json({ error: 'Faltan parámetros' });
+      return res.status(400).json({ error: 'Faltan parametros' });
     }
 
     let categoriesArray = Array.isArray(categories) ? categories : [categories];
 
     if (!categoriesArray.length) {
-      return res.status(400).json({ error: 'Se requiere categoría' });
+      return res.status(400).json({ error: 'Se requiere categoria' });
     }
 
-    if (!GOOGLE_MAPS_API_KEY) {
-      return res.status(500).json({ error: 'Falta GOOGLE_MAPS_API_KEY' });
+    if (!GOOGLE_MAPS__KEY) {
+      return res.status(500).json({ error: 'Falta GOOGLE_MAPS__KEY' });
     }
 
-    console.log(`🚀 ${city}, ${country} - ${categoriesArray.join(', ')}`);
+    console.log('Iniciando: ' + city + ', ' + country + ' - ' + categoriesArray.join(', '));
 
     const allPlacesMap = new Map();
 
@@ -221,78 +228,62 @@ app.post('/run-campaign', async (req, res) => {
     }
 
     const allPlaces = Array.from(allPlacesMap.values());
-    const placesWithPhone = allPlaces.filter((p) => {
+    const placesWithPhone = allPlaces.filter(function(p) {
       const phone = p.formatted_phone_number || p.international_phone_number;
       return phone && String(phone).trim();
     });
     
-    const leads = placesWithPhone.map((p) => formatGooglePlaceToLead(p, country));
+    const leads = placesWithPhone.map(function(p) {
+      return formatGooglePlaceToLead(p, country);
+    });
 
-    const ratings = leads.map((l) => l.rating).filter((r) => typeof r === 'number');
+    const ratings = leads.map(function(l) { return l.rating; }).filter(function(r) { return typeof r === 'number'; });
     const avgRating = ratings.length > 0 
-      ? Number((ratings.reduce((sum, r) => sum + r, 0) / ratings.length).toFixed(2)) 
+      ? Number((ratings.reduce(function(sum, r) { return sum + r; }, 0) / ratings.length).toFixed(2)) 
       : 0;
 
     const executionTime = Date.now() - startTime;
 
-    console.log(`✅ ${leads.length} leads - ${(executionTime / 1000).toFixed(1)}s`);
+    console.log('Completado: ' + leads.length + ' leads - ' + (executionTime / 1000).toFixed(1) + 's');
 
     return res.json({
-      campaignId,
-      campaignName,
+      campaignId: campaignId,
+      campaignName: campaignName,
       categories: categoriesArray,
-      city,
-      country,
-      leads,
-      executionTime,
+      city: city,
+      country: country,
+      leads: leads,
+      executionTime: executionTime,
       summary: {
         total: leads.length,
         totalFound: allPlaces.length,
         withPhone: placesWithPhone.length,
-        avgRating,
+        avgRating: avgRating,
       },
     });
   } catch (err) {
-    console.error('❌', err.message);
+    console.error('Error: ' + err.message);
     return res.status(500).json({
-      error: 'Error en campaña',
+      error: 'Error en campana',
       details: err.message,
     });
   }
 });
 
-app.get('/', (req, res) => {
+app.get('/', function(req, res) {
   res.json({
     message: 'Komerzia Market Hunter MCP',
     version: '2.0',
   });
 });
 
-app.get('/health', (req, res) => {
+app.get('/health', function(req, res) {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Port ${PORT}`);
+app.listen(PORT, function() {
+  console.log('Server on port ' + PORT);
 });
-```
-
----
-
-## 🔑 Cambios que corrigen el error:
-
-1. **Eliminé destructuring opcional** en funciones - causaba problemas
-2. **Arreglé los optional chaining** (`?.`) - los puse como condicionales normales
-3. **Quité `_req` y `_res`** - uso normal `req, res`
-4. **Simplifiqué accesos anidados** - uso condicionales `if` en lugar de `?.`
-
----
-
-## ⚙️ Antes de probar:
-
-**Asegúrate de agregar la variable de entorno en Railway:**
-```
-GOOGLE_MAPS_API_KEY = AIzaSyAa6y6xcuVuGu1PSTu1HCv5u3jCmGv66nI
