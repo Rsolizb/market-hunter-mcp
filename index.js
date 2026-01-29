@@ -46,34 +46,50 @@ async function searchWithGooglePlaces(category, city, country, maxResults) {
     
     const searchVariations = [
       category + ' ' + city + ' ' + country,
+      category + ' en ' + city + ' ' + country,
       category + ' cerca de ' + city + ' ' + country,
-      'mejores ' + category + ' ' + city + ' ' + country,
-      'top ' + category + ' ' + city + ' ' + country
+      'mejores ' + category + ' ' + city,
+      'top ' + category + ' ' + city,
+      category + ' ' + city + ' centro',
+      category + ' ' + city + ' zona norte',
+      category + ' ' + city + ' zona sur',
+      category + ' ' + city + ' zona este',
+      category + ' ' + city + ' zona oeste',
+      category + ' recomendados ' + city,
+      category + ' populares ' + city,
+      'donde encontrar ' + category + ' ' + city,
+      category + ' baratos ' + city,
+      category + ' economicos ' + city
     ];
 
-    for (let i = 0; i < Math.min(numSearches, searchVariations.length); i++) {
+    for (let i = 0; i < Math.min(numSearches * 2, searchVariations.length); i++) {
       const query = searchVariations[i];
-      console.log('Variacion ' + (i + 1) + ': ' + query);
+      console.log('Busqueda ' + (i + 1) + ': ' + query);
       
       const places = await searchGooglePlacesAPI(query);
       
+      let newPlaces = 0;
       for (const place of places) {
         if (!allPlaces.has(place.place_id)) {
           allPlaces.set(place.place_id, place);
+          newPlaces++;
         }
       }
 
-      console.log('Acumulados: ' + allPlaces.size + ' lugares');
+      console.log('Nuevos: ' + newPlaces + ' | Acumulados: ' + allPlaces.size + ' lugares');
 
-      if (allPlaces.size >= maxResults) break;
+      if (allPlaces.size >= maxResults) {
+        console.log('Objetivo alcanzado: ' + maxResults);
+        break;
+      }
       
-      if (i < numSearches - 1) {
-        await sleep(1000);
+      if (i < searchVariations.length - 1) {
+        await sleep(1500);
       }
     }
 
     const results = Array.from(allPlaces.values());
-    console.log('Total: ' + results.length + ' lugares');
+    console.log('Total final: ' + results.length + ' lugares');
     return results;
 
   } catch (error) {
@@ -102,12 +118,12 @@ async function searchGooglePlacesAPI(query) {
     }
 
     if (response.data.status === 'ZERO_RESULTS') {
-      console.log('Sin resultados para esta busqueda');
+      console.log('Sin resultados');
       return [];
     }
 
     const places = response.data.results || [];
-    console.log('Google devolvio: ' + places.length + ' lugares');
+    console.log('-> ' + places.length + ' resultados');
     
     const detailedPlaces = [];
     
@@ -120,9 +136,8 @@ async function searchGooglePlacesAPI(query) {
         } else {
           detailedPlaces.push(place);
         }
-        await sleep(100);
+        await sleep(80);
       } catch (err) {
-        console.error('Error obteniendo detalles: ' + err.message);
         detailedPlaces.push(place);
       }
     }
@@ -218,13 +233,19 @@ app.post('/run-campaign', async (req, res) => {
       return res.status(500).json({ error: 'Falta GOOGLE_MAPS_API_KEY' });
     }
 
-    console.log('Campana: ' + city + ', ' + country + ' - ' + categoriesArray.join(', '));
+    console.log('='.repeat(60));
+    console.log('Campana: ' + campaignName);
+    console.log('Ubicacion: ' + city + ', ' + country);
+    console.log('Categorias: ' + categoriesArray.join(', '));
+    console.log('Objetivo: ' + maxResultsPerCategory + ' resultados');
+    console.log('='.repeat(60));
 
     const allPlacesMap = new Map();
 
     for (const catStr of categoriesArray) {
       if (!catStr.trim()) continue;
 
+      console.log('\nProcesando categoria: ' + catStr.trim());
       const googleResults = await searchWithGooglePlaces(catStr.trim(), city, country, maxResultsPerCategory);
 
       for (const place of googleResults) {
@@ -236,10 +257,14 @@ app.post('/run-campaign', async (req, res) => {
     }
 
     const allPlaces = Array.from(allPlacesMap.values());
+    console.log('\n' + '='.repeat(60));
+    console.log('Total lugares encontrados: ' + allPlaces.length);
+    
     const placesWithPhone = allPlaces.filter(function(p) {
       const phone = p.formatted_phone_number || p.international_phone_number;
       return phone && String(phone).trim();
     });
+    console.log('Lugares con telefono: ' + placesWithPhone.length);
     
     const leads = placesWithPhone.map(function(p) {
       return formatGooglePlaceToLead(p, country);
@@ -250,7 +275,9 @@ app.post('/run-campaign', async (req, res) => {
 
     const executionTime = Date.now() - startTime;
 
-    console.log('Completado: ' + leads.length + ' leads en ' + (executionTime / 1000).toFixed(1) + 's');
+    console.log('Rating promedio: ' + avgRating);
+    console.log('Tiempo total: ' + (executionTime / 1000).toFixed(1) + 's');
+    console.log('='.repeat(60) + '\n');
 
     return res.json({
       campaignId: campaignId,
@@ -279,7 +306,7 @@ app.post('/run-campaign', async (req, res) => {
 app.get('/', function(req, res) {
   res.json({
     message: 'Komerzia Market Hunter MCP',
-    version: '2.0',
+    version: '2.1',
     googleMapsConfigured: !!GOOGLE_MAPS_API_KEY
   });
 });
