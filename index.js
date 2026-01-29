@@ -42,31 +42,25 @@ async function searchWithGooglePlaces(category, city, country, maxResults) {
     console.log('Buscando: ' + category + ' en ' + city + ', ' + country);
 
     const allPlaces = new Map();
-    const numSearches = Math.ceil(maxResults / 60);
     
     const searchVariations = [
       category + ' ' + city + ' ' + country,
-      category + ' en ' + city + ' ' + country,
-      category + ' cerca de ' + city + ' ' + country,
+      category + ' en ' + city,
       'mejores ' + category + ' ' + city,
-      'top ' + category + ' ' + city,
       category + ' ' + city + ' centro',
       category + ' ' + city + ' zona norte',
       category + ' ' + city + ' zona sur',
-      category + ' ' + city + ' zona este',
-      category + ' ' + city + ' zona oeste',
+      category + ' cerca de ' + city,
+      'top ' + category + ' ' + city,
       category + ' recomendados ' + city,
-      category + ' populares ' + city,
-      'donde encontrar ' + category + ' ' + city,
-      category + ' baratos ' + city,
-      category + ' economicos ' + city
+      category + ' populares ' + city
     ];
 
-    for (let i = 0; i < Math.min(numSearches * 2, searchVariations.length); i++) {
+    for (let i = 0; i < searchVariations.length; i++) {
       const query = searchVariations[i];
-      console.log('Busqueda ' + (i + 1) + ': ' + query);
+      console.log('[' + (i + 1) + '/' + searchVariations.length + '] ' + query);
       
-      const places = await searchGooglePlacesAPI(query);
+      const places = await searchGooglePlacesAPIFast(query);
       
       let newPlaces = 0;
       for (const place of places) {
@@ -76,21 +70,24 @@ async function searchWithGooglePlaces(category, city, country, maxResults) {
         }
       }
 
-      console.log('Nuevos: ' + newPlaces + ' | Acumulados: ' + allPlaces.size + ' lugares');
+      console.log('  -> +' + newPlaces + ' nuevos | Total: ' + allPlaces.size);
 
       if (allPlaces.size >= maxResults) {
         console.log('Objetivo alcanzado: ' + maxResults);
         break;
       }
       
-      if (i < searchVariations.length - 1) {
-        await sleep(1500);
-      }
+      await sleep(800);
     }
 
-    const results = Array.from(allPlaces.values());
-    console.log('Total final: ' + results.length + ' lugares');
-    return results;
+    const allPlacesArray = Array.from(allPlaces.values());
+    console.log('\nTotal lugares: ' + allPlacesArray.length);
+    
+    console.log('Obteniendo detalles de telefonos...');
+    const placesWithDetails = await getPhoneDetailsForPlaces(allPlacesArray);
+    
+    console.log('Proceso completado\n');
+    return placesWithDetails;
 
   } catch (error) {
     console.error('Error: ' + error.message);
@@ -98,7 +95,7 @@ async function searchWithGooglePlaces(category, city, country, maxResults) {
   }
 }
 
-async function searchGooglePlacesAPI(query) {
+async function searchGooglePlacesAPIFast(query) {
   try {
     const response = await axios.get('https://maps.googleapis.com/maps/api/place/textsearch/json', {
       params: {
@@ -106,48 +103,51 @@ async function searchGooglePlacesAPI(query) {
         key: GOOGLE_MAPS_API_KEY,
         language: 'es'
       },
-      timeout: 10000
+      timeout: 8000
     });
 
     if (response.data.status !== 'OK' && response.data.status !== 'ZERO_RESULTS') {
-      console.error('Google API status: ' + response.data.status);
-      if (response.data.error_message) {
-        console.error('Error message: ' + response.data.error_message);
-      }
       return [];
     }
 
     if (response.data.status === 'ZERO_RESULTS') {
-      console.log('Sin resultados');
       return [];
     }
 
-    const places = response.data.results || [];
-    console.log('-> ' + places.length + ' resultados');
-    
-    const detailedPlaces = [];
-    
-    for (const place of places) {
-      try {
-        const details = await getPlaceDetails(place.place_id);
-        if (details) {
-          const combined = Object.assign({}, place, details);
-          detailedPlaces.push(combined);
-        } else {
-          detailedPlaces.push(place);
-        }
-        await sleep(80);
-      } catch (err) {
-        detailedPlaces.push(place);
-      }
-    }
-
-    return detailedPlaces;
+    return response.data.results || [];
 
   } catch (error) {
-    console.error('Error en Google Places API: ' + error.message);
     return [];
   }
+}
+
+async function getPhoneDetailsForPlaces(places) {
+  const detailedPlaces = [];
+  const batchSize = 10;
+  
+  for (let i = 0; i < places.length; i += batchSize) {
+    const batch = places.slice(i, i + batchSize);
+    
+    const promises = batch.map(function(place) {
+      return getPlaceDetails(place.place_id).then(function(details) {
+        if (details) {
+          return Object.assign({}, place, details);
+        }
+        return place;
+      }).catch(function() {
+        return place;
+      });
+    });
+    
+    const results = await Promise.all(promises);
+    detailedPlaces.push.apply(detailedPlaces, results);
+    
+    if (i + batchSize < places.length) {
+      await sleep(100);
+    }
+  }
+  
+  return detailedPlaces;
 }
 
 async function getPlaceDetails(placeId) {
@@ -159,7 +159,7 @@ async function getPlaceDetails(placeId) {
         key: GOOGLE_MAPS_API_KEY,
         language: 'es'
       },
-      timeout: 5000
+      timeout: 3000
     });
 
     if (response.data.status === 'OK') {
@@ -233,19 +233,17 @@ app.post('/run-campaign', async (req, res) => {
       return res.status(500).json({ error: 'Falta GOOGLE_MAPS_API_KEY' });
     }
 
-    console.log('='.repeat(60));
-    console.log('Campana: ' + campaignName);
-    console.log('Ubicacion: ' + city + ', ' + country);
-    console.log('Categorias: ' + categoriesArray.join(', '));
-    console.log('Objetivo: ' + maxResultsPerCategory + ' resultados');
-    console.log('='.repeat(60));
+    console.log('\n' + '='.repeat(60));
+    console.log('CAMPANA: ' + campaignName);
+    console.log('UBICACION: ' + city + ', ' + country);
+    console.log('CATEGORIAS: ' + categoriesArray.join(', '));
+    console.log('='.repeat(60) + '\n');
 
     const allPlacesMap = new Map();
 
     for (const catStr of categoriesArray) {
       if (!catStr.trim()) continue;
 
-      console.log('\nProcesando categoria: ' + catStr.trim());
       const googleResults = await searchWithGooglePlaces(catStr.trim(), city, country, maxResultsPerCategory);
 
       for (const place of googleResults) {
@@ -257,14 +255,14 @@ app.post('/run-campaign', async (req, res) => {
     }
 
     const allPlaces = Array.from(allPlacesMap.values());
-    console.log('\n' + '='.repeat(60));
-    console.log('Total lugares encontrados: ' + allPlaces.length);
+    console.log('='.repeat(60));
+    console.log('TOTAL LUGARES: ' + allPlaces.length);
     
     const placesWithPhone = allPlaces.filter(function(p) {
       const phone = p.formatted_phone_number || p.international_phone_number;
       return phone && String(phone).trim();
     });
-    console.log('Lugares con telefono: ' + placesWithPhone.length);
+    console.log('CON TELEFONO: ' + placesWithPhone.length);
     
     const leads = placesWithPhone.map(function(p) {
       return formatGooglePlaceToLead(p, country);
@@ -275,8 +273,8 @@ app.post('/run-campaign', async (req, res) => {
 
     const executionTime = Date.now() - startTime;
 
-    console.log('Rating promedio: ' + avgRating);
-    console.log('Tiempo total: ' + (executionTime / 1000).toFixed(1) + 's');
+    console.log('RATING PROMEDIO: ' + avgRating);
+    console.log('TIEMPO: ' + (executionTime / 1000).toFixed(1) + 's');
     console.log('='.repeat(60) + '\n');
 
     return res.json({
@@ -295,7 +293,7 @@ app.post('/run-campaign', async (req, res) => {
       }
     });
   } catch (err) {
-    console.error('Error: ' + err.message);
+    console.error('ERROR:', err.message);
     return res.status(500).json({
       error: 'Error en campana',
       details: err.message
@@ -306,7 +304,7 @@ app.post('/run-campaign', async (req, res) => {
 app.get('/', function(req, res) {
   res.json({
     message: 'Komerzia Market Hunter MCP',
-    version: '2.1',
+    version: '2.3 - Optimized',
     googleMapsConfigured: !!GOOGLE_MAPS_API_KEY
   });
 });
@@ -314,7 +312,6 @@ app.get('/', function(req, res) {
 app.get('/health', function(req, res) {
   res.json({
     status: 'ok',
-    googleMapsConfigured: !!GOOGLE_MAPS_API_KEY,
     timestamp: new Date().toISOString()
   });
 });
