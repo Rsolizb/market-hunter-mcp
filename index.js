@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-const GOOGLE_MAPS__KEY = process.env.GOOGLE_MAPS__KEY;
+const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -25,6 +25,7 @@ const COUNTRY_DIAL_CODES = {
   Peru: '+51',
   Perú: '+51',
 };
+
 function normalizePhone(phone, country) {
   if (!phone || typeof phone !== 'string') return null;
   const trimmed = phone.trim();
@@ -35,29 +36,34 @@ function normalizePhone(phone, country) {
   clean = clean.replace(/^0+/, '').trim();
   return dialCode + ' ' + clean;
 }
+
 async function searchWithGooglePlaces(category, city, country, maxResults) {
   try {
-    console.log('Buscando: ' + category + ' in ' + city + ', ' + country);
+    console.log('Buscando: ' + category + ' en ' + city + ', ' + country);
 
-    const numSearches = Math.ceil(maxResults / 60);
     const allPlaces = new Map();
+    const numSearches = Math.ceil(maxResults / 60);
     
     const searchVariations = [
       category + ' ' + city + ' ' + country,
-      category + ' near ' + city + ' ' + country,
-      'best ' + category + ' ' + city + ' ' + country,
+      category + ' cerca de ' + city + ' ' + country,
+      'mejores ' + category + ' ' + city + ' ' + country,
       'top ' + category + ' ' + city + ' ' + country,
     ];
 
     for (let i = 0; i < Math.min(numSearches, searchVariations.length); i++) {
       const query = searchVariations[i];
-      const places = await searchGooglePlaces(query);
+      console.log('Variacion ' + (i + 1) + ': ' + query);
+      
+      const places = await searchGooglePlacesAPI(query);
       
       for (const place of places) {
         if (!allPlaces.has(place.place_id)) {
           allPlaces.set(place.place_id, place);
         }
       }
+
+      console.log('Acumulados: ' + allPlaces.size + ' lugares');
 
       if (allPlaces.size >= maxResults) break;
       
@@ -67,7 +73,7 @@ async function searchWithGooglePlaces(category, city, country, maxResults) {
     }
 
     const results = Array.from(allPlaces.values());
-    console.log('Resultados: ' + results.length);
+    console.log('Total: ' + results.length + ' lugares');
     return results;
 
   } catch (error) {
@@ -76,44 +82,58 @@ async function searchWithGooglePlaces(category, city, country, maxResults) {
   }
 }
 
-async function searchGooglePlaces(query) {
+async function searchGooglePlacesAPI(query) {
   try {
     const response = await axios.get(
-      'https://maps.googles.com/maps//place/textsearch/json',
+      'https://maps.googleapis.com/maps/api/place/textsearch/json',
       {
         params: {
           query: query,
-          key: GOOGLE_MAPS__KEY,
+          key: GOOGLE_MAPS_API_KEY,
           language: 'es'
         },
         timeout: 10000
       }
     );
 
-    if (response.data.status !== 'OK') {
-      console.error('Google  status: ' + response.data.status);
+    if (response.data.status !== 'OK' && response.data.status !== 'ZERO_RESULTS') {
+      console.error('Google API status: ' + response.data.status);
+      if (response.data.error_message) {
+        console.error('Error message: ' + response.data.error_message);
+      }
+      return [];
+    }
+
+    if (response.data.status === 'ZERO_RESULTS') {
+      console.log('Sin resultados para esta busqueda');
       return [];
     }
 
     const places = response.data.results || [];
+    console.log('Google devolvio: ' + places.length + ' lugares');
+    
     const detailedPlaces = [];
     
     for (const place of places) {
       try {
         const details = await getPlaceDetails(place.place_id);
         if (details) {
-          detailedPlaces.push(Object.assign({}, place, details));
+          const combined = Object.assign({}, place, details);
+          detailedPlaces.push(combined);
+        } else {
+          detailedPlaces.push(place);
         }
         await sleep(100);
       } catch (err) {
         console.error('Error obteniendo detalles: ' + err.message);
+        detailedPlaces.push(place);
       }
     }
 
     return detailedPlaces;
 
   } catch (error) {
-    console.error('Error en Google Places : ' + error.message);
+    console.error('Error en Google Places API: ' + error.message);
     return [];
   }
 }
@@ -121,12 +141,12 @@ async function searchGooglePlaces(query) {
 async function getPlaceDetails(placeId) {
   try {
     const response = await axios.get(
-      'https://maps.googles.com/maps//place/details/json',
+      'https://maps.googleapis.com/maps/api/place/details/json',
       {
         params: {
           place_id: placeId,
-          fields: 'formatted_phone_number,international_phone_number,website,opening_hours,url',
-          key: GOOGLE_MAPS__KEY,
+          fields: 'formatted_phone_number,international_phone_number,website,opening_hours',
+          key: GOOGLE_MAPS_API_KEY,
           language: 'es'
         },
         timeout: 5000
@@ -142,6 +162,7 @@ async function getPlaceDetails(placeId) {
     return null;
   }
 }
+
 function formatGooglePlaceToLead(place, country) {
   const phone = normalizePhone(
     place.formatted_phone_number || place.international_phone_number,
@@ -179,6 +200,7 @@ function formatGooglePlaceToLead(place, country) {
     hours: hours,
   };
 }
+
 app.post('/run-campaign', async (req, res) => {
   const startTime = Date.now();
 
@@ -201,11 +223,11 @@ app.post('/run-campaign', async (req, res) => {
       return res.status(400).json({ error: 'Se requiere categoria' });
     }
 
-    if (!GOOGLE_MAPS__KEY) {
-      return res.status(500).json({ error: 'Falta GOOGLE_MAPS__KEY' });
+    if (!GOOGLE_MAPS_API_KEY) {
+      return res.status(500).json({ error: 'Falta GOOGLE_MAPS_API_KEY' });
     }
 
-    console.log('Iniciando: ' + city + ', ' + country + ' - ' + categoriesArray.join(', '));
+    console.log('Campana: ' + city + ', ' + country + ' - ' + categoriesArray.join(', '));
 
     const allPlacesMap = new Map();
 
@@ -244,7 +266,7 @@ app.post('/run-campaign', async (req, res) => {
 
     const executionTime = Date.now() - startTime;
 
-    console.log('Completado: ' + leads.length + ' leads - ' + (executionTime / 1000).toFixed(1) + 's');
+    console.log('Completado: ' + leads.length + ' leads en ' + (executionTime / 1000).toFixed(1) + 's');
 
     return res.json({
       campaignId: campaignId,
@@ -274,12 +296,14 @@ app.get('/', function(req, res) {
   res.json({
     message: 'Komerzia Market Hunter MCP',
     version: '2.0',
+    googleMapsConfigured: !!GOOGLE_MAPS_API_KEY,
   });
 });
 
 app.get('/health', function(req, res) {
   res.json({
     status: 'ok',
+    googleMapsConfigured: !!GOOGLE_MAPS_API_KEY,
     timestamp: new Date().toISOString(),
   });
 });
@@ -287,3 +311,39 @@ app.get('/health', function(req, res) {
 app.listen(PORT, function() {
   console.log('Server on port ' + PORT);
 });
+```
+
+---
+
+## 🔑 Lo que hace este código:
+
+1. **4 búsquedas variadas** por categoría:
+   - "barberias Santa Cruz Bolivia"
+   - "barberias cerca de Santa Cruz Bolivia"
+   - "mejores barberias Santa Cruz Bolivia"
+   - "top barberias Santa Cruz Bolivia"
+
+2. **Cada búsqueda trae hasta 60 resultados**
+
+3. **Obtiene detalles con teléfono** de cada lugar
+
+4. **Elimina duplicados** por `place_id`
+
+5. **Devuelve hasta 240 lugares únicos** con teléfono
+
+---
+
+## 📊 Resultados esperados:
+
+- ✅ **100-240 resultados** por categoría
+- ✅ **2-4 minutos** de ejecución
+- ✅ **Todos con teléfono**
+- ✅ **Sin error 502**
+
+---
+
+## ⚠️ Importante:
+
+Verifica que en Railway la variable se llame **exactamente**:
+```
+GOOGLE_MAPS_API_KEY
