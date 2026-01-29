@@ -10,8 +10,7 @@ app.use(cors());
 app.use(express.json());
 
 const APIFY_TOKEN = process.env.APIFY_TOKEN;
-// NUEVO ACTOR que sí permite 200+ resultados
-const APIFY_ACTOR_ID = 'dtrungtin~google-maps-scraper';
+const APIFY_ACTOR_ID = 'nwua9~google-maps-scraper';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -43,18 +42,15 @@ async function searchPlacesWithApify({ category, city, country, maxResults = 200
   try {
     const searchQuery = `${category} in ${city}, ${country}`;
 
-    // Configuración para el nuevo actor
     const apifyConfig = {
-      searchQueries: [searchQuery],
-      maxPlacesPerSearch: maxResults,
+      queries: [searchQuery],
+      maxResults: maxResults,
       language: 'es',
-      deeperCityScrape: false,
-      includeImages: false,
-      includeReviews: false,
-      includePeopleAlsoSearch: false
+      scrapeReviews: false,
+      scrapeImages: false
     };
 
-    console.log(`🔍 Buscando: ${searchQuery} (max: ${maxResults})`);
+    console.log(`🔍 ${searchQuery} (max: ${maxResults})`);
 
     const runResponse = await axios.post(
       `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_TOKEN}`,
@@ -70,13 +66,13 @@ async function searchPlacesWithApify({ category, city, country, maxResults = 200
 
     console.log(`✅ Run: ${runId}`);
 
-    const results = await waitForApifyResults(runId, datasetId, 80);
+    const results = await waitForApifyResults(runId, datasetId);
     console.log(`📊 ${results.length} resultados`);
     
     return results;
 
   } catch (error) {
-    console.error(`❌ Error:`, error.message);
+    console.error(`❌ ${error.message}`);
     return [];
   }
 }
@@ -116,7 +112,7 @@ async function waitForApifyResults(runId, datasetId, maxIntentos = 80) {
 
 async function getDatasetResults(datasetId) {
   const response = await axios.get(
-    `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_TOKEN}&limit=1000`,
+    `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_TOKEN}`,
     { timeout: 10000 }
   );
   return response.data || [];
@@ -126,18 +122,18 @@ function formatApifyResultToLead(place, country) {
   const phone = normalizePhone(place.phone || place.phoneNumber, country);
   
   return {
-    name: place.title || place.name || null,
+    name: place.name || place.title || null,
     address: place.address || null,
     rating: place.rating || place.totalScore || null,
-    location: place.location ? { 
-      lat: place.location.lat, 
-      lng: place.location.lng 
+    location: place.location || place.coordinates ? {
+      lat: place.location?.lat || place.coordinates?.lat,
+      lng: place.location?.lng || place.coordinates?.lng
     } : null,
     place_id: place.placeId || place.id || null,
     phone: phone,
     website: place.website || place.url || null,
     category: place.category || place.categoryName || null,
-    reviews: place.reviewsCount || place.reviews || 0,
+    reviews: place.reviewsCount || place.totalReviews || 0,
     hours: place.openingHours || null,
   };
 }
@@ -190,7 +186,7 @@ app.post('/run-campaign', async (req, res) => {
     const allPlaces = Array.from(allPlacesMap.values());
     const placesWithPhone = allPlaces.filter((p) => {
       const phone = p.phone || p.phoneNumber;
-      return phone && phone.trim();
+      return phone && String(phone).trim();
     });
     
     const leads = placesWithPhone.map((p) => formatApifyResultToLead(p, country));
