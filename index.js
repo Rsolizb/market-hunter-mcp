@@ -37,13 +37,11 @@ function normalizePhone(phone, country) {
   return `${dialCode} ${clean}`;
 }
 
-async function searchWithGooglePlaces({ category, city, country, maxResults = 200 }) {
+async function searchWithGooglePlaces(category, city, country, maxResults) {
   try {
-    const searchQuery = `${category} in ${city}, ${country}`;
-    console.log(`🔍 ${searchQuery}`);
+    console.log(`🔍 ${category} in ${city}, ${country}`);
 
-    // Hacer múltiples búsquedas para obtener más resultados
-    const numSearches = Math.ceil(maxResults / 60); // Google da máx 60 por búsqueda
+    const numSearches = Math.ceil(maxResults / 60);
     const allPlaces = new Map();
     
     const searchVariations = [
@@ -65,7 +63,6 @@ async function searchWithGooglePlaces({ category, city, country, maxResults = 20
 
       if (allPlaces.size >= maxResults) break;
       
-      // Pausa entre búsquedas
       if (i < numSearches - 1) {
         await sleep(1000);
       }
@@ -83,7 +80,6 @@ async function searchWithGooglePlaces({ category, city, country, maxResults = 20
 
 async function searchGooglePlacesAPI(query) {
   try {
-    // Text Search API
     const response = await axios.get(
       'https://maps.googleapis.com/maps/api/place/textsearch/json',
       {
@@ -102,8 +98,6 @@ async function searchGooglePlacesAPI(query) {
     }
 
     const places = response.data.results || [];
-    
-    // Obtener detalles con teléfono para cada lugar
     const detailedPlaces = [];
     
     for (const place of places) {
@@ -115,7 +109,7 @@ async function searchGooglePlacesAPI(query) {
             ...details
           });
         }
-        await sleep(100); // Pequeña pausa entre requests
+        await sleep(100);
       } catch (err) {
         console.error(`Error obteniendo detalles: ${err.message}`);
       }
@@ -164,16 +158,16 @@ function formatGooglePlaceToLead(place, country) {
     name: place.name || null,
     address: place.formatted_address || null,
     rating: place.rating || null,
-    location: place.geometry?.location ? {
+    location: place.geometry && place.geometry.location ? {
       lat: place.geometry.location.lat,
       lng: place.geometry.location.lng
     } : null,
     place_id: place.place_id || null,
     phone: phone,
     website: place.website || null,
-    category: place.types?.[0] || null,
+    category: place.types && place.types.length > 0 ? place.types[0] : null,
     reviews: place.user_ratings_total || 0,
-    hours: place.opening_hours?.weekday_text?.join(', ') || null,
+    hours: place.opening_hours && place.opening_hours.weekday_text ? place.opening_hours.weekday_text.join(', ') : null,
   };
 }
 
@@ -211,12 +205,12 @@ app.post('/run-campaign', async (req, res) => {
     for (const catStr of categoriesArray) {
       if (!catStr.trim()) continue;
 
-      const googleResults = await searchWithGooglePlaces({
-        category: catStr.trim(),
+      const googleResults = await searchWithGooglePlaces(
+        catStr.trim(),
         city,
         country,
-        maxResults: maxResultsPerCategory,
-      });
+        maxResultsPerCategory
+      );
 
       for (const place of googleResults) {
         const placeId = place.place_id;
@@ -267,14 +261,14 @@ app.post('/run-campaign', async (req, res) => {
   }
 });
 
-app.get('/', (_req, res) => {
+app.get('/', (req, res) => {
   res.json({
     message: 'Komerzia Market Hunter MCP',
     version: '2.0',
   });
 });
 
-app.get('/health', (_req, res) => {
+app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
@@ -288,8 +282,17 @@ app.listen(PORT, () => {
 
 ---
 
-## ⚙️ Configuración en Railway:
+## 🔑 Cambios que corrigen el error:
 
-Necesitas agregar la variable de entorno:
+1. **Eliminé destructuring opcional** en funciones - causaba problemas
+2. **Arreglé los optional chaining** (`?.`) - los puse como condicionales normales
+3. **Quité `_req` y `_res`** - uso normal `req, res`
+4. **Simplifiqué accesos anidados** - uso condicionales `if` en lugar de `?.`
+
+---
+
+## ⚙️ Antes de probar:
+
+**Asegúrate de agregar la variable de entorno en Railway:**
 ```
 GOOGLE_MAPS_API_KEY = AIzaSyAa6y6xcuVuGu1PSTu1HCv5u3jCmGv66nI
