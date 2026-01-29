@@ -9,8 +9,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-const APIFY_TOKEN = process.env.APIFY_TOKEN;
-const APIFY_ACTOR_ID = 'nwua9~google-maps-scraper';
+const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -38,37 +37,42 @@ function normalizePhone(phone, country) {
   return `${dialCode} ${clean}`;
 }
 
-async function searchPlacesWithApify({ category, city, country, maxResults = 200 }) {
+async function searchWithGooglePlaces({ category, city, country, maxResults = 200 }) {
   try {
     const searchQuery = `${category} in ${city}, ${country}`;
+    console.log(`🔍 ${searchQuery}`);
 
-    const apifyConfig = {
-      queries: [searchQuery],
-      maxResults: maxResults,
-      language: 'es',
-      scrapeReviews: false,
-      scrapeImages: false
-    };
-
-    console.log(`🔍 ${searchQuery} (max: ${maxResults})`);
-
-    const runResponse = await axios.post(
-      `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_TOKEN}`,
-      apifyConfig,
-      {
-        headers: { 'Content-Type': 'application/json' },
-        timeout: 10000,
-      }
-    );
-
-    const runId = runResponse.data.data.id;
-    const datasetId = runResponse.data.data.defaultDatasetId;
-
-    console.log(`✅ Run: ${runId}`);
-
-    const results = await waitForApifyResults(runId, datasetId);
-    console.log(`📊 ${results.length} resultados`);
+    // Hacer múltiples búsquedas para obtener más resultados
+    const numSearches = Math.ceil(maxResults / 60); // Google da máx 60 por búsqueda
+    const allPlaces = new Map();
     
+    const searchVariations = [
+      `${category} ${city} ${country}`,
+      `${category} near ${city} ${country}`,
+      `best ${category} ${city} ${country}`,
+      `top ${category} ${city} ${country}`,
+    ];
+
+    for (let i = 0; i < Math.min(numSearches, searchVariations.length); i++) {
+      const query = searchVariations[i];
+      const places = await searchGooglePlacesAPI(query);
+      
+      for (const place of places) {
+        if (!allPlaces.has(place.place_id)) {
+          allPlaces.set(place.place_id, place);
+        }
+      }
+
+      if (allPlaces.size >= maxResults) break;
+      
+      // Pausa entre búsquedas
+      if (i < numSearches - 1) {
+        await sleep(1000);
+      }
+    }
+
+    const results = Array.from(allPlaces.values());
+    console.log(`📊 ${results.length} resultados`);
     return results;
 
   } catch (error) {
@@ -77,64 +81,99 @@ async function searchPlacesWithApify({ category, city, country, maxResults = 200
   }
 }
 
-async function waitForApifyResults(runId, datasetId, maxIntentos = 80) {
-  const intervalo = 3000;
-
-  for (let i = 0; i < maxIntentos; i++) {
-    try {
-      const statusResponse = await axios.get(
-        `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs/${runId}?token=${APIFY_TOKEN}`,
-        { timeout: 5000 }
-      );
-
-      const status = statusResponse.data.data.status;
-
-      if (status === 'SUCCEEDED') {
-        return await getDatasetResults(datasetId);
-      }
-
-      if (status === 'FAILED' || status === 'ABORTED') {
-        return [];
-      }
-
-      await sleep(intervalo);
-    } catch (err) {
-      await sleep(intervalo);
-    }
-  }
-
+async function searchGooglePlacesAPI(query) {
   try {
-    return await getDatasetResults(datasetId);
-  } catch {
+    // Text Search API
+    const response = await axios.get(
+      'https://maps.googleapis.com/maps/api/place/textsearch/json',
+      {
+        params: {
+          query: query,
+          key: GOOGLE_MAPS_API_KEY,
+          language: 'es'
+        },
+        timeout: 10000
+      }
+    );
+
+    if (response.data.status !== 'OK') {
+      console.error(`Google API status: ${response.data.status}`);
+      return [];
+    }
+
+    const places = response.data.results || [];
+    
+    // Obtener detalles con teléfono para cada lugar
+    const detailedPlaces = [];
+    
+    for (const place of places) {
+      try {
+        const details = await getPlaceDetails(place.place_id);
+        if (details) {
+          detailedPlaces.push({
+            ...place,
+            ...details
+          });
+        }
+        await sleep(100); // Pequeña pausa entre requests
+      } catch (err) {
+        console.error(`Error obteniendo detalles: ${err.message}`);
+      }
+    }
+
+    return detailedPlaces;
+
+  } catch (error) {
+    console.error(`Error en Google Places API: ${error.message}`);
     return [];
   }
 }
 
-async function getDatasetResults(datasetId) {
-  const response = await axios.get(
-    `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_TOKEN}`,
-    { timeout: 10000 }
-  );
-  return response.data || [];
+async function getPlaceDetails(placeId) {
+  try {
+    const response = await axios.get(
+      'https://maps.googleapis.com/maps/api/place/details/json',
+      {
+        params: {
+          place_id: placeId,
+          fields: 'formatted_phone_number,international_phone_number,website,opening_hours,url',
+          key: GOOGLE_MAPS_API_KEY,
+          language: 'es'
+        },
+        timeout: 5000
+      }
+    );
+
+    if (response.data.status === 'OK') {
+      return response.data.result;
+    }
+    
+    return null;
+  } catch (error) {
+    return null;
+  }
 }
 
-function formatApifyResultToLead(place, country) {
-  const phone = normalizePhone(place.phone || place.phoneNumber, country);
-  
+function formatGooglePlaceToLead(place, country) {
+  const phone = normalizePhone(
+    place.formatted_phone_number || place.international_phone_number,
+    country
+  );
+
   return {
-    name: place.name || place.title || null,
-    address: place.address || null,
-    rating: place.rating || place.totalScore || null,
-    location: place.location || place.coordinates ? {
-      lat: place.location?.lat || place.coordinates?.lat,
-      lng: place.location?.lng || place.coordinates?.lng
+    name: place.name || null,
+    address: place.formatted_address || null,
+    rating: place.rating || null,
+    location: place.geometry?.location ? {
+      lat: place.geometry.location.lat,
+      lng: place.geometry.location.lng
     } : null,
-    place_id: place.placeId || place.id || null,
+    place_id: place.place_id || null,
     phone: phone,
-    website: place.website || place.url || null,
-    category: place.category || place.categoryName || null,
-    reviews: place.reviewsCount || place.totalReviews || 0,
-    hours: place.openingHours || null,
+    website: place.website || null,
+    category: place.types?.[0] || null,
+    reviews: place.user_ratings_total || 0,
+    hours: place.opening_hours?.weekday_text?.join(', ') || null,
   };
 }
 
@@ -161,6 +200,10 @@ app.post('/run-campaign', async (req, res) => {
       return res.status(400).json({ error: 'Se requiere categoría' });
     }
 
+    if (!GOOGLE_MAPS_API_KEY) {
+      return res.status(500).json({ error: 'Falta GOOGLE_MAPS_API_KEY' });
+    }
+
     console.log(`🚀 ${city}, ${country} - ${categoriesArray.join(', ')}`);
 
     const allPlacesMap = new Map();
@@ -168,15 +211,15 @@ app.post('/run-campaign', async (req, res) => {
     for (const catStr of categoriesArray) {
       if (!catStr.trim()) continue;
 
-      const apifyResults = await searchPlacesWithApify({
+      const googleResults = await searchWithGooglePlaces({
         category: catStr.trim(),
         city,
         country,
         maxResults: maxResultsPerCategory,
       });
 
-      for (const place of apifyResults) {
-        const placeId = place.placeId || place.id || place.place_id;
+      for (const place of googleResults) {
+        const placeId = place.place_id;
         if (placeId && !allPlacesMap.has(placeId)) {
           allPlacesMap.set(placeId, place);
         }
@@ -185,11 +228,11 @@ app.post('/run-campaign', async (req, res) => {
 
     const allPlaces = Array.from(allPlacesMap.values());
     const placesWithPhone = allPlaces.filter((p) => {
-      const phone = p.phone || p.phoneNumber;
+      const phone = p.formatted_phone_number || p.international_phone_number;
       return phone && String(phone).trim();
     });
     
-    const leads = placesWithPhone.map((p) => formatApifyResultToLead(p, country));
+    const leads = placesWithPhone.map((p) => formatGooglePlaceToLead(p, country));
 
     const ratings = leads.map((l) => l.rating).filter((r) => typeof r === 'number');
     const avgRating = ratings.length > 0 
@@ -241,3 +284,12 @@ app.get('/health', (_req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Port ${PORT}`);
 });
+```
+
+---
+
+## ⚙️ Configuración en Railway:
+
+Necesitas agregar la variable de entorno:
+```
+GOOGLE_MAPS_API_KEY = AIzaSyAa6y6xcuVuGu1PSTu1HCv5u3jCmGv66nI
