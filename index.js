@@ -14,16 +14,16 @@ const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const COUNTRY_DIAL_CODES = {
-  Bolivia: '+591',
+  'Bolivia': '+591',
   'Estado Plurinacional de Bolivia': '+591',
-  Paraguay: '+595',
-  España: '+34',
-  Mexico: '+52',
-  México: '+52',
-  Argentina: '+54',
-  Chile: '+56',
-  Peru: '+51',
-  Perú: '+51',
+  'Paraguay': '+595',
+  'España': '+34',
+  'Mexico': '+52',
+  'México': '+52',
+  'Argentina': '+54',
+  'Chile': '+56',
+  'Peru': '+51',
+  'Perú': '+51'
 };
 
 function normalizePhone(phone, country) {
@@ -48,7 +48,7 @@ async function searchWithGooglePlaces(category, city, country, maxResults) {
       category + ' ' + city + ' ' + country,
       category + ' cerca de ' + city + ' ' + country,
       'mejores ' + category + ' ' + city + ' ' + country,
-      'top ' + category + ' ' + city + ' ' + country,
+      'top ' + category + ' ' + city + ' ' + country
     ];
 
     for (let i = 0; i < Math.min(numSearches, searchVariations.length); i++) {
@@ -84,17 +84,14 @@ async function searchWithGooglePlaces(category, city, country, maxResults) {
 
 async function searchGooglePlacesAPI(query) {
   try {
-    const response = await axios.get(
-      'https://maps.googleapis.com/maps/api/place/textsearch/json',
-      {
-        params: {
-          query: query,
-          key: GOOGLE_MAPS_API_KEY,
-          language: 'es'
-        },
-        timeout: 10000
-      }
-    );
+    const response = await axios.get('https://maps.googleapis.com/maps/api/place/textsearch/json', {
+      params: {
+        query: query,
+        key: GOOGLE_MAPS_API_KEY,
+        language: 'es'
+      },
+      timeout: 10000
+    });
 
     if (response.data.status !== 'OK' && response.data.status !== 'ZERO_RESULTS') {
       console.error('Google API status: ' + response.data.status);
@@ -140,18 +137,15 @@ async function searchGooglePlacesAPI(query) {
 
 async function getPlaceDetails(placeId) {
   try {
-    const response = await axios.get(
-      'https://maps.googleapis.com/maps/api/place/details/json',
-      {
-        params: {
-          place_id: placeId,
-          fields: 'formatted_phone_number,international_phone_number,website,opening_hours',
-          key: GOOGLE_MAPS_API_KEY,
-          language: 'es'
-        },
-        timeout: 5000
-      }
-    );
+    const response = await axios.get('https://maps.googleapis.com/maps/api/place/details/json', {
+      params: {
+        place_id: placeId,
+        fields: 'formatted_phone_number,international_phone_number,website,opening_hours',
+        key: GOOGLE_MAPS_API_KEY,
+        language: 'es'
+      },
+      timeout: 5000
+    });
 
     if (response.data.status === 'OK') {
       return response.data.result;
@@ -164,10 +158,7 @@ async function getPlaceDetails(placeId) {
 }
 
 function formatGooglePlaceToLead(place, country) {
-  const phone = normalizePhone(
-    place.formatted_phone_number || place.international_phone_number,
-    country
-  );
+  const phone = normalizePhone(place.formatted_phone_number || place.international_phone_number, country);
 
   let location = null;
   if (place.geometry && place.geometry.location) {
@@ -197,7 +188,7 @@ function formatGooglePlaceToLead(place, country) {
     website: place.website || null,
     category: category,
     reviews: place.user_ratings_total || 0,
-    hours: hours,
+    hours: hours
   };
 }
 
@@ -234,12 +225,7 @@ app.post('/run-campaign', async (req, res) => {
     for (const catStr of categoriesArray) {
       if (!catStr.trim()) continue;
 
-      const googleResults = await searchWithGooglePlaces(
-        catStr.trim(),
-        city,
-        country,
-        maxResultsPerCategory
-      );
+      const googleResults = await searchWithGooglePlaces(catStr.trim(), city, country, maxResultsPerCategory);
 
       for (const place of googleResults) {
         const placeId = place.place_id;
@@ -260,9 +246,7 @@ app.post('/run-campaign', async (req, res) => {
     });
 
     const ratings = leads.map(function(l) { return l.rating; }).filter(function(r) { return typeof r === 'number'; });
-    const avgRating = ratings.length > 0 
-      ? Number((ratings.reduce(function(sum, r) { return sum + r; }, 0) / ratings.length).toFixed(2)) 
-      : 0;
+    const avgRating = ratings.length > 0 ? Number((ratings.reduce(function(sum, r) { return sum + r; }, 0) / ratings.length).toFixed(2)) : 0;
 
     const executionTime = Date.now() - startTime;
 
@@ -280,14 +264,14 @@ app.post('/run-campaign', async (req, res) => {
         total: leads.length,
         totalFound: allPlaces.length,
         withPhone: placesWithPhone.length,
-        avgRating: avgRating,
-      },
+        avgRating: avgRating
+      }
     });
   } catch (err) {
     console.error('Error: ' + err.message);
     return res.status(500).json({
       error: 'Error en campana',
-      details: err.message,
+      details: err.message
     });
   }
 });
@@ -296,7 +280,7 @@ app.get('/', function(req, res) {
   res.json({
     message: 'Komerzia Market Hunter MCP',
     version: '2.0',
-    googleMapsConfigured: !!GOOGLE_MAPS_API_KEY,
+    googleMapsConfigured: !!GOOGLE_MAPS_API_KEY
   });
 });
 
@@ -304,46 +288,10 @@ app.get('/health', function(req, res) {
   res.json({
     status: 'ok',
     googleMapsConfigured: !!GOOGLE_MAPS_API_KEY,
-    timestamp: new Date().toISOString(),
+    timestamp: new Date().toISOString()
   });
 });
 
 app.listen(PORT, function() {
   console.log('Server on port ' + PORT);
 });
-```
-
----
-
-## 🔑 Lo que hace este código:
-
-1. **4 búsquedas variadas** por categoría:
-   - "barberias Santa Cruz Bolivia"
-   - "barberias cerca de Santa Cruz Bolivia"
-   - "mejores barberias Santa Cruz Bolivia"
-   - "top barberias Santa Cruz Bolivia"
-
-2. **Cada búsqueda trae hasta 60 resultados**
-
-3. **Obtiene detalles con teléfono** de cada lugar
-
-4. **Elimina duplicados** por `place_id`
-
-5. **Devuelve hasta 240 lugares únicos** con teléfono
-
----
-
-## 📊 Resultados esperados:
-
-- ✅ **100-240 resultados** por categoría
-- ✅ **2-4 minutos** de ejecución
-- ✅ **Todos con teléfono**
-- ✅ **Sin error 502**
-
----
-
-## ⚠️ Importante:
-
-Verifica que en Railway la variable se llame **exactamente**:
-```
-GOOGLE_MAPS_API_KEY
