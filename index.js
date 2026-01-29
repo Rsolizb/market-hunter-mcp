@@ -11,6 +11,8 @@ app.use(express.json());
 
 const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 
+const campaignResults = new Map();
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const COUNTRY_DIAL_CODES = {
@@ -53,7 +55,12 @@ async function searchWithGooglePlaces(category, city, country, maxResults) {
       category + ' cerca de ' + city,
       'top ' + category + ' ' + city,
       category + ' recomendados ' + city,
-      category + ' populares ' + city
+      category + ' populares ' + city,
+      category + ' ' + city + ' zona este',
+      category + ' ' + city + ' zona oeste',
+      'donde encontrar ' + category + ' ' + city,
+      category + ' baratos ' + city,
+      category + ' economicos ' + city
     ];
 
     for (let i = 0; i < searchVariations.length; i++) {
@@ -70,10 +77,9 @@ async function searchWithGooglePlaces(category, city, country, maxResults) {
         }
       }
 
-      console.log('  -> +' + newPlaces + ' nuevos | Total: ' + allPlaces.size);
+      console.log('  +' + newPlaces + ' | Total: ' + allPlaces.size);
 
       if (allPlaces.size >= maxResults) {
-        console.log('Objetivo alcanzado: ' + maxResults);
         break;
       }
       
@@ -81,12 +87,9 @@ async function searchWithGooglePlaces(category, city, country, maxResults) {
     }
 
     const allPlacesArray = Array.from(allPlaces.values());
-    console.log('\nTotal lugares: ' + allPlacesArray.length);
-    
-    console.log('Obteniendo detalles de telefonos...');
+    console.log('Obteniendo detalles...');
     const placesWithDetails = await getPhoneDetailsForPlaces(allPlacesArray);
     
-    console.log('Proceso completado\n');
     return placesWithDetails;
 
   } catch (error) {
@@ -106,15 +109,11 @@ async function searchGooglePlacesAPIFast(query) {
       timeout: 8000
     });
 
-    if (response.data.status !== 'OK' && response.data.status !== 'ZERO_RESULTS') {
-      return [];
+    if (response.data.status === 'OK') {
+      return response.data.results || [];
     }
-
-    if (response.data.status === 'ZERO_RESULTS') {
-      return [];
-    }
-
-    return response.data.results || [];
+    
+    return [];
 
   } catch (error) {
     return [];
@@ -207,9 +206,94 @@ function formatGooglePlaceToLead(place, country) {
   };
 }
 
-app.post('/run-campaign', async (req, res) => {
-  const startTime = Date.now();
+async function processCampaignInBackground(campaignData) {
+  const campaignId = campaignData.campaignId;
+  
+  try {
+    console.log('\n=== PROCESANDO: ' + campaignId + ' ===');
+    
+    campaignResults.set(campaignId, {
+      status: 'processing',
+      progress: 0,
+      message: 'Iniciando busqueda...'
+    });
 
+    const allPlacesMap = new Map();
+
+    for (let idx = 0; idx < campaignData.categories.length; idx++) {
+      const catStr = campaignData.categories[idx];
+      if (!catStr.trim()) continue;
+
+      const progress = Math.round(((idx + 1) / campaignData.categories.length) * 100);
+      campaignResults.set(campaignId, {
+        status: 'processing',
+        progress: progress,
+        message: 'Buscando: ' + catStr.trim()
+      });
+
+      const googleResults = await searchWithGooglePlaces(
+        catStr.trim(),
+        campaignData.city,
+        campaignData.country,
+        campaignData.maxResultsPerCategory
+      );
+
+      for (const place of googleResults) {
+        const placeId = place.place_id;
+        if (placeId && !allPlacesMap.has(placeId)) {
+          allPlacesMap.set(placeId, place);
+        }
+      }
+    }
+
+    const allPlaces = Array.from(allPlacesMap.values());
+    const placesWithPhone = allPlaces.filter(function(p) {
+      const phone = p.formatted_phone_number || p.international_phone_number;
+      return phone && String(phone).trim();
+    });
+    
+    const leads = placesWithPhone.map(function(p) {
+      return formatGooglePlaceToLead(p, campaignData.country);
+    });
+
+    const ratings = leads.map(function(l) { return l.rating; }).filter(function(r) { return typeof r === 'number'; });
+    const avgRating = ratings.length > 0 ? Number((ratings.reduce(function(sum, r) { return sum + r; }, 0) / ratings.length).toFixed(2)) : 0;
+
+    const summary = {
+      total: leads.length,
+      totalFound: allPlaces.length,
+      withPhone: placesWithPhone.length,
+      avgRating: avgRating
+    };
+
+    console.log('=== COMPLETADO: ' + leads.length + ' leads ===\n');
+
+    campaignResults.set(campaignId, {
+      status: 'completed',
+      progress: 100,
+      campaignId: campaignId,
+      campaignName: campaignData.campaignName,
+      categories: campaignData.categories,
+      city: campaignData.city,
+      country: campaignData.country,
+      leads: leads,
+      summary: summary
+    });
+
+    setTimeout(function() {
+      campaignResults.delete(campaignId);
+    }, 3600000);
+
+  } catch (error) {
+    console.error('Error en background:', error.message);
+    campaignResults.set(campaignId, {
+      status: 'failed',
+      error: error.message
+    });
+  }
+}
+
+app.post('/run-campaign', async (req, res) => {
   try {
     const body = req.body || {};
     const campaignId = body.campaignId;
@@ -233,78 +317,55 @@ app.post('/run-campaign', async (req, res) => {
       return res.status(500).json({ error: 'Falta GOOGLE_MAPS_API_KEY' });
     }
 
-    console.log('\n' + '='.repeat(60));
-    console.log('CAMPANA: ' + campaignName);
-    console.log('UBICACION: ' + city + ', ' + country);
-    console.log('CATEGORIAS: ' + categoriesArray.join(', '));
-    console.log('='.repeat(60) + '\n');
+    console.log('Iniciando campana: ' + campaignName);
 
-    const allPlacesMap = new Map();
-
-    for (const catStr of categoriesArray) {
-      if (!catStr.trim()) continue;
-
-      const googleResults = await searchWithGooglePlaces(catStr.trim(), city, country, maxResultsPerCategory);
-
-      for (const place of googleResults) {
-        const placeId = place.place_id;
-        if (placeId && !allPlacesMap.has(placeId)) {
-          allPlacesMap.set(placeId, place);
-        }
-      }
-    }
-
-    const allPlaces = Array.from(allPlacesMap.values());
-    console.log('='.repeat(60));
-    console.log('TOTAL LUGARES: ' + allPlaces.length);
-    
-    const placesWithPhone = allPlaces.filter(function(p) {
-      const phone = p.formatted_phone_number || p.international_phone_number;
-      return phone && String(phone).trim();
-    });
-    console.log('CON TELEFONO: ' + placesWithPhone.length);
-    
-    const leads = placesWithPhone.map(function(p) {
-      return formatGooglePlaceToLead(p, country);
-    });
-
-    const ratings = leads.map(function(l) { return l.rating; }).filter(function(r) { return typeof r === 'number'; });
-    const avgRating = ratings.length > 0 ? Number((ratings.reduce(function(sum, r) { return sum + r; }, 0) / ratings.length).toFixed(2)) : 0;
-
-    const executionTime = Date.now() - startTime;
-
-    console.log('RATING PROMEDIO: ' + avgRating);
-    console.log('TIEMPO: ' + (executionTime / 1000).toFixed(1) + 's');
-    console.log('='.repeat(60) + '\n');
-
-    return res.json({
+    const campaignData = {
       campaignId: campaignId,
       campaignName: campaignName,
       categories: categoriesArray,
       city: city,
       country: country,
-      leads: leads,
-      executionTime: executionTime,
-      summary: {
-        total: leads.length,
-        totalFound: allPlaces.length,
-        withPhone: placesWithPhone.length,
-        avgRating: avgRating
-      }
+      maxResultsPerCategory: maxResultsPerCategory
+    };
+
+    processCampaignInBackground(campaignData).catch(function(err) {
+      console.error('Error:', err);
     });
+
+    return res.json({
+      status: 'processing',
+      message: 'Campana iniciada',
+      campaignId: campaignId,
+      statusUrl: '/campaign-status/' + campaignId
+    });
+
   } catch (err) {
-    console.error('ERROR:', err.message);
+    console.error('Error:', err.message);
     return res.status(500).json({
-      error: 'Error en campana',
+      error: 'Error iniciando campana',
       details: err.message
     });
   }
 });
 
+app.get('/campaign-status/:campaignId', function(req, res) {
+  const campaignId = req.params.campaignId;
+  
+  if (!campaignResults.has(campaignId)) {
+    return res.status(404).json({
+      status: 'not_found',
+      message: 'Campana no encontrada'
+    });
+  }
+
+  const result = campaignResults.get(campaignId);
+  return res.json(result);
+});
+
 app.get('/', function(req, res) {
   res.json({
     message: 'Komerzia Market Hunter MCP',
-    version: '2.3 - Optimized',
+    version: '3.0 - Async',
     googleMapsConfigured: !!GOOGLE_MAPS_API_KEY
   });
 });
