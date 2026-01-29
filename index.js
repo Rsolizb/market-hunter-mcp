@@ -9,8 +9,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-const APIFY_TOKEN = process.env.APIFY_TOKEN;
-const APIFY_ACTOR_ID = 'compass~google-maps-extractor';
+const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 
 const campaignResults = new Map();
 
@@ -40,12 +39,11 @@ function normalizePhone(phone, country) {
   return dialCode + ' ' + clean;
 }
 
-async function searchPlacesWithApify(category, city, country, maxResults) {
+async function searchWithGooglePlaces(category, city, country, maxResults) {
   try {
     console.log('Buscando: ' + category + ' en ' + city + ', ' + country);
 
     const allPlaces = new Map();
-    const numSearches = Math.ceil(maxResults / 20);
     
     const searchVariations = [
       category + ' ' + city + ' ' + country,
@@ -57,41 +55,24 @@ async function searchPlacesWithApify(category, city, country, maxResults) {
       category + ' cerca de ' + city,
       'top ' + category + ' ' + city,
       category + ' recomendados ' + city,
-      category + ' populares ' + city
+      category + ' populares ' + city,
+      category + ' ' + city + ' zona este',
+      category + ' ' + city + ' zona oeste',
+      'donde encontrar ' + category + ' ' + city,
+      category + ' baratos ' + city,
+      category + ' economicos ' + city
     ];
 
-    for (let i = 0; i < Math.min(numSearches, searchVariations.length); i++) {
-      const searchQuery = searchVariations[i];
+    for (let i = 0; i < searchVariations.length; i++) {
+      const query = searchVariations[i];
+      console.log('[' + (i + 1) + '/' + searchVariations.length + '] ' + query);
       
-      const apifyConfig = {
-        searchStringsArray: [searchQuery],
-        maxCrawledPlaces: 20,
-        language: 'es',
-        deeperCityScrape: false,
-        maxReviews: 0,
-        maxImages: 0
-      };
-
-      console.log('[' + (i + 1) + '/' + numSearches + '] ' + searchQuery);
-
-      const runResponse = await axios.post(
-        'https://api.apify.com/v2/acts/' + APIFY_ACTOR_ID + '/runs?token=' + APIFY_TOKEN + '&maxTotalChargeUsd=7',
-        apifyConfig,
-        {
-          headers: { 'Content-Type': 'application/json' },
-          timeout: 10000
-        }
-      );
-
-      const runId = runResponse.data.data.id;
-      const datasetId = runResponse.data.data.defaultDatasetId;
-
-      const results = await waitForApifyResults(runId, datasetId);
+      const places = await searchGooglePlacesAPIFast(query);
       
       let newPlaces = 0;
-      for (const place of results) {
-        if (!allPlaces.has(place.placeId)) {
-          allPlaces.set(place.placeId, place);
+      for (const place of places) {
+        if (!allPlaces.has(place.place_id)) {
+          allPlaces.set(place.place_id, place);
           newPlaces++;
         }
       }
@@ -99,16 +80,17 @@ async function searchPlacesWithApify(category, city, country, maxResults) {
       console.log('  +' + newPlaces + ' | Total: ' + allPlaces.size);
 
       if (allPlaces.size >= maxResults) {
-        console.log('Objetivo alcanzado');
         break;
       }
-
-      await sleep(2000);
+      
+      await sleep(800);
     }
 
-    const finalResults = Array.from(allPlaces.values());
-    console.log('Total final: ' + finalResults.length);
-    return finalResults;
+    const allPlacesArray = Array.from(allPlaces.values());
+    console.log('Obteniendo detalles...');
+    const placesWithDetails = await getPhoneDetailsForPlaces(allPlacesArray);
+    
+    return placesWithDetails;
 
   } catch (error) {
     console.error('Error: ' + error.message);
@@ -116,54 +98,111 @@ async function searchPlacesWithApify(category, city, country, maxResults) {
   }
 }
 
-async function waitForApifyResults(runId, datasetId) {
-  const maxIntentos = 40;
-  const intervalo = 3000;
+async function searchGooglePlacesAPIFast(query) {
+  try {
+    const response = await axios.get('https://maps.googleapis.com/maps/api/place/textsearch/json', {
+      params: {
+        query: query,
+        key: GOOGLE_MAPS_API_KEY,
+        language: 'es'
+      },
+      timeout: 8000
+    });
 
-  for (let i = 0; i < maxIntentos; i++) {
-    try {
-      const statusResponse = await axios.get(
-        'https://api.apify.com/v2/acts/' + APIFY_ACTOR_ID + '/runs/' + runId + '?token=' + APIFY_TOKEN,
-        { timeout: 5000 }
-      );
-
-      const status = statusResponse.data.data.status;
-
-      if (status === 'SUCCEEDED') {
-        const resultsResponse = await axios.get(
-          'https://api.apify.com/v2/datasets/' + datasetId + '/items?token=' + APIFY_TOKEN,
-          { timeout: 10000 }
-        );
-        return resultsResponse.data || [];
-      }
-
-      if (status === 'FAILED' || status === 'ABORTED') {
-        return [];
-      }
-
-      await sleep(intervalo);
-    } catch (err) {
-      await sleep(intervalo);
+    if (response.data.status === 'OK') {
+      return response.data.results || [];
     }
-  }
+    
+    return [];
 
-  return [];
+  } catch (error) {
+    return [];
+  }
 }
 
-function formatApifyResultToLead(place, country) {
-  const phone = normalizePhone(place.phone, country);
+async function getPhoneDetailsForPlaces(places) {
+  const detailedPlaces = [];
+  const batchSize = 10;
+  
+  for (let i = 0; i < places.length; i += batchSize) {
+    const batch = places.slice(i, i + batchSize);
+    
+    const promises = batch.map(function(place) {
+      return getPlaceDetails(place.place_id).then(function(details) {
+        if (details) {
+          return Object.assign({}, place, details);
+        }
+        return place;
+      }).catch(function() {
+        return place;
+      });
+    });
+    
+    const results = await Promise.all(promises);
+    detailedPlaces.push.apply(detailedPlaces, results);
+    
+    if (i + batchSize < places.length) {
+      await sleep(100);
+    }
+  }
+  
+  return detailedPlaces;
+}
+
+async function getPlaceDetails(placeId) {
+  try {
+    const response = await axios.get('https://maps.googleapis.com/maps/api/place/details/json', {
+      params: {
+        place_id: placeId,
+        fields: 'formatted_phone_number,international_phone_number,website,opening_hours',
+        key: GOOGLE_MAPS_API_KEY,
+        language: 'es'
+      },
+      timeout: 3000
+    });
+
+    if (response.data.status === 'OK') {
+      return response.data.result;
+    }
+    
+    return null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function formatGooglePlaceToLead(place, country) {
+  const phone = normalizePhone(place.formatted_phone_number || place.international_phone_number, country);
+
+  let location = null;
+  if (place.geometry && place.geometry.location) {
+    location = {
+      lat: place.geometry.location.lat,
+      lng: place.geometry.location.lng
+    };
+  }
+
+  let category = null;
+  if (place.types && place.types.length > 0) {
+    category = place.types[0];
+  }
+
+  let hours = null;
+  if (place.opening_hours && place.opening_hours.weekday_text) {
+    hours = place.opening_hours.weekday_text.join(', ');
+  }
 
   return {
-    name: place.title || null,
-    address: place.address || null,
-    rating: place.totalScore || null,
-    location: place.location ? { lat: place.location.lat, lng: place.location.lng } : null,
-    place_id: place.placeId || null,
+    name: place.name || null,
+    address: place.formatted_address || null,
+    rating: place.rating || null,
+    location: location,
+    place_id: place.place_id || null,
     phone: phone,
     website: place.website || null,
-    category: place.categoryName || null,
-    reviews: place.reviewsCount || 0,
-    hours: place.openingHours || null
+    category: category,
+    reviews: place.user_ratings_total || 0,
+    hours: hours
   };
 }
 
@@ -192,15 +231,15 @@ async function processCampaignInBackground(campaignData) {
         message: 'Buscando: ' + catStr.trim()
       });
 
-      const apifyResults = await searchPlacesWithApify(
+      const googleResults = await searchWithGooglePlaces(
         catStr.trim(),
         campaignData.city,
         campaignData.country,
         campaignData.maxResultsPerCategory
       );
 
-      for (const place of apifyResults) {
-        const placeId = place.placeId;
+      for (const place of googleResults) {
+        const placeId = place.place_id;
         if (placeId && !allPlacesMap.has(placeId)) {
           allPlacesMap.set(placeId, place);
         }
@@ -209,11 +248,12 @@ async function processCampaignInBackground(campaignData) {
 
     const allPlaces = Array.from(allPlacesMap.values());
     const placesWithPhone = allPlaces.filter(function(p) {
-      return p.phone && p.phone.trim();
+      const phone = p.formatted_phone_number || p.international_phone_number;
+      return phone && String(phone).trim();
     });
     
     const leads = placesWithPhone.map(function(p) {
-      return formatApifyResultToLead(p, campaignData.country);
+      return formatGooglePlaceToLead(p, campaignData.country);
     });
 
     const ratings = leads.map(function(l) { return l.rating; }).filter(function(r) { return typeof r === 'number'; });
@@ -273,8 +313,8 @@ app.post('/run-campaign', async (req, res) => {
       return res.status(400).json({ error: 'Se requiere categoria' });
     }
 
-    if (!APIFY_TOKEN) {
-      return res.status(500).json({ error: 'Falta APIFY_TOKEN' });
+    if (!GOOGLE_MAPS_API_KEY) {
+      return res.status(500).json({ error: 'Falta GOOGLE_MAPS_API_KEY' });
     }
 
     console.log('Iniciando campana: ' + campaignName);
@@ -325,8 +365,8 @@ app.get('/campaign-status/:campaignId', function(req, res) {
 app.get('/', function(req, res) {
   res.json({
     message: 'Komerzia Market Hunter MCP',
-    version: '3.1 - Apify Async',
-    apifyConfigured: !!APIFY_TOKEN
+    version: '3.0 - Async',
+    googleMapsConfigured: !!GOOGLE_MAPS_API_KEY
   });
 });
 
