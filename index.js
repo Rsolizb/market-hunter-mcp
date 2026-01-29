@@ -57,7 +57,7 @@ async function searchPlacesWithApify({ category, city, country, maxResults = 200
 
     // Timeout debe ser mayor que waitForFinish (30s)
     const runResponse = await axios.post(
-      `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_TOKEN}&waitForFinish=30&maxItems=${maxResults}&maxTotalChargeUsd=5`,
+      `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?waitForFinish=300&maxItems=200&maxTotalChargeUsd=20`,
       apifyConfig,
       {
         headers: { 'Content-Type': 'application/json' },
